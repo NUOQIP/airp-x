@@ -43,4 +43,16 @@ describe("avatar text validation", () => {
     const wrongType = normalizeModelOutput({ events: [{ type: "account.upsert", account: { ...account, avatarText: 7 } }] });
     expect(() => AccountSchema.parse((wrongType as { events: Array<{ account: unknown }> }).events[0]!.account)).toThrow();
   });
+
+  it("drops model writes to fixed accounts and locked profile projections", () => {
+    const normalized = normalizeModelOutput({ events: [
+      { type: "account.upsert", account: { id: "account-heroine-cover", displayName: "changed" } },
+      { type: "account.upsert", account: { id: "account-npc", displayName: "NPC" } },
+      { type: "profile.patch", patch: { bannerTone: "rose", location: "changed", pinnedPostId: "post-new", upsertSections: [], removeSectionIds: [] } }
+    ] }) as { events: Array<Record<string, unknown>> };
+
+    expect(normalized.events).toHaveLength(2);
+    expect((normalized.events[0]!.account as { id: string }).id).toBe("account-npc");
+    expect(normalized.events[1]!.patch).toEqual({ pinnedPostId: "post-new", upsertSections: [], removeSectionIds: [] });
+  });
 });

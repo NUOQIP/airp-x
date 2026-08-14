@@ -528,12 +528,20 @@ export function validateRuleConstraints(base: StorySnapshot, output: AiTurnOutpu
     if (new Set(revealOrders).size !== revealOrders.length || revealOrders.some((order, index) => index > 0 && order <= revealOrders[index - 1]!)) issues.push("renderPlan revealOrder must be unique and strictly increasing");
   }
   for (const panel of output.renderPlan.panels) if (!panelHasMatchingChange(base, output, panel)) issues.push(`render panel ${panel.id} has no matching state change`);
-  const profileEvents = output.events.filter((event): event is Extract<DomainEvent, { type: "profile.patch" }> => event.type === "profile.patch");
-  const profileCopy = clone(base.profile);
-  for (const event of profileEvents) {
-    const temporarySnapshot = { ...clone(base), profile: profileCopy };
-    applyEvent(temporarySnapshot, event);
+  const profileSimulation = clone(base);
+  for (const event of output.events) {
+    if (event.type === "post.upsert") {
+      if (!profileSimulation.posts.some((post) => post.id === event.post.id)) profileSimulation.posts.push({ ...clone(event.post), metrics: zeroMetrics() });
+      continue;
+    }
+    if (event.type === "post.remove" || event.type === "post.moderate") {
+      const post = profileSimulation.posts.find((current) => current.id === event.postId);
+      if (post) post.moderation = event.type === "post.remove" ? "deleted" : event.moderation;
+      continue;
+    }
+    if (event.type === "profile.patch") applyEvent(profileSimulation, event);
   }
+  const profileCopy = profileSimulation.profile;
   let changes = Number(profileCopy.location !== base.profile.location)
     + Number(profileCopy.bannerTone !== base.profile.bannerTone)
     + Number((profileCopy.pinnedPostId ?? null) !== (base.profile.pinnedPostId ?? null));
@@ -565,8 +573,8 @@ export function validateRuleConstraints(base: StorySnapshot, output: AiTurnOutpu
   const newPostIds = new Set(newPostEvents.map((event) => event.post.id));
   for (const postId of newPostIds) {
     const comments = output.events.filter((event) => event.type === "comment.upsert" && event.comment.postId === postId).length;
-    const minimum = rule.representativeComments ?? 1;
-    if (comments < minimum) issues.push(`post ${postId} requires at least ${minimum} accompanying comments; received ${comments}`);
+    const target = rule.representativeComments ?? 1;
+    if (target > 0 && comments === 0) issues.push(`post ${postId} requires at least 1 accompanying comment when representative comments are enabled`);
   }
   for (const event of output.events) {
     if (event.type !== "live.upsert") continue;

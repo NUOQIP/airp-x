@@ -124,13 +124,13 @@ describe("story engine", () => {
     expect(() => validateRuleConstraints(base, output, { minProfileChanges: 0, minPanels: 1, maxPanels: 5 })).toThrow(/panels/);
   });
 
-  it("enforces representative comments for new posts", () => {
+  it("treats representative comments as a target while requiring one real comment", () => {
     const base = createInitialStorySnapshot();
     const output = validOutput();
     const newPost = { ...structuredClone(base.posts[0]!), id: "post-hard-constraint", pinned: false };
     output.events.push({ type: "post.upsert", post: newPost });
     output.renderPlan.panels.push({ id: "panel-post", kind: "post", targetId: newPost.id, revealOrder: 1, delayMs: 120 });
-    expect(() => validateRuleConstraints(base, output, {
+    const rule = {
       minProfileChanges: 0,
       minPanels: 1,
       maxPanels: 5,
@@ -142,7 +142,23 @@ describe("story engine", () => {
       maxLiveQueueItems: 25,
       requireLiveBarrage: true,
       enforceFixedAccounts: true
-    })).toThrow(/15 accompanying comments/);
+    };
+    expect(() => validateRuleConstraints(base, output, rule)).toThrow(/at least 1 accompanying comment/);
+
+    output.events.push({ type: "comment.upsert", comment: { ...structuredClone(base.comments[0]!), id: "comment-representative", postId: newPost.id, parentId: undefined } });
+    expect(() => validateRuleConstraints(base, output, rule)).not.toThrow();
+  });
+
+  it("allows a post created earlier in the turn to become the pinned post", () => {
+    const base = createInitialStorySnapshot();
+    const output = validOutput();
+    const newPost = { ...structuredClone(base.posts[0]!), id: "post-new-pinned", pinned: false };
+    output.events.push(
+      { type: "post.upsert", post: newPost },
+      { type: "profile.patch", patch: { pinnedPostId: newPost.id, upsertSections: [], removeSectionIds: [] } }
+    );
+    output.renderPlan.panels.push({ id: "panel-new-post", kind: "post", targetId: newPost.id, revealOrder: 1, delayMs: 120 });
+    expect(() => validateRuleConstraints(base, output, { minProfileChanges: 0, minPanels: 1, maxPanels: 5, representativeComments: 0 })).not.toThrow();
   });
 
   it("enforces live queue length and barrage requirements", () => {

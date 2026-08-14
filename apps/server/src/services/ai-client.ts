@@ -34,8 +34,10 @@ const stateWriteContractV2: PromptMessage = {
     "profile.item.add may add an origin=ai temporary item to the fixed initial sidebar/status live card or to an AI-origin section. Its source must be extensions.profileTemporary.<sectionId>.<itemId>. Initial items cannot be removed; an AI-origin temporary item may later be removed with profile.item.remove. append_only items can never be removed.",
     "Every turn must set heroine.status, heroine.outfit, and heroine.mood to truthful values for the new story moment that differ from their previous values. Other temporary sources may remain unchanged when the story does not change them.",
     "When heroine.location changes, use a real-world place name consistent with the story; do not fabricate a supposedly verifiable venue. The program cannot independently map-verify it.",
+    "The fixed account ids account-heroine, account-heroine-cover, and account-player already exist and are player-controlled; never emit account.upsert for them. Never include bannerTone or location in profile.patch. Update heroine.location only through mvuOperations.",
     "Do not write mvu.derived, revision, computed counters, profile follower/post counts, interaction metrics, trend rank, trend heatScore, or volumeLabel.",
     "Existing posts and comments are immutable: post.upsert and comment.upsert create new ids only. Use post.remove/comment.moderate for supported later state changes.",
+    "When publishing a post, aim for the configured representative_comments target and include at least one coherent accompanying comment when that target is non-zero. A smaller coherent set is valid and must not be padded with repetitive filler.",
     "platform.impact carries qualitative kind/scale only. platform.trend.upsert/remove carries stable identity and qualitative heat only; the program computes all numbers and ranking.",
     "Use statistics.insemination.append for new count/volumeMl records, profile.item.append for milestone/history records, and fan.goal.upsert for fan goals. Only unfinished current/future goals may be updated; completed goals are immutable.",
     "The biological cycle is 7 story-days: menstruation 1, follicular 2, ovulation 1, luteal 3. AI controls storyTime. Pregnancy has one legal transition chain: none -> suspected -> confirmed -> ended -> none. A turn may keep the current state, but never skip, reverse, or transition directly from none to confirmed. Only on suspected -> confirmed, choose durationDays, conceptionAt, and confirmedAt once; never rewrite them afterward. Only on confirmed -> ended, set a new heroine.cycle.anchorDate in that same turn; only a later ended -> none transition returns to the ordinary cycle.",
@@ -172,18 +174,27 @@ export function normalizeModelOutput(value: unknown): unknown {
   if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) return normalized;
   const root = normalized as Record<string, unknown>;
   if (!Array.isArray(root.events)) return normalized;
-  for (const item of root.events) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+  const fixedAccountIds = new Set(["account-heroine", "account-heroine-cover", "account-player"]);
+  root.events = root.events.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return true;
     const event = item as Record<string, unknown>;
-    if (event.type !== "account.upsert" || !event.account || typeof event.account !== "object" || Array.isArray(event.account)) continue;
-    const account = event.account as Record<string, unknown>;
-    if (typeof account.avatarText === "string") {
-      const avatarText = account.avatarText.trim().normalize("NFKC");
-      const parsedAvatarText = AvatarTextSchema.safeParse(avatarText);
-      if (parsedAvatarText.success) account.avatarText = parsedAvatarText.data;
-      else delete account.avatarText;
+    if (event.type === "profile.patch" && event.patch && typeof event.patch === "object" && !Array.isArray(event.patch)) {
+      const patch = event.patch as Record<string, unknown>;
+      delete patch.bannerTone;
+      delete patch.location;
     }
-  }
+    if (event.type === "account.upsert" && event.account && typeof event.account === "object" && !Array.isArray(event.account)) {
+      const account = event.account as Record<string, unknown>;
+      if (typeof account.id === "string" && fixedAccountIds.has(account.id)) return false;
+      if (typeof account.avatarText === "string") {
+        const avatarText = account.avatarText.trim().normalize("NFKC");
+        const parsedAvatarText = AvatarTextSchema.safeParse(avatarText);
+        if (parsedAvatarText.success) account.avatarText = parsedAvatarText.data;
+        else delete account.avatarText;
+      }
+    }
+    return true;
+  });
   return normalized;
 }
 
