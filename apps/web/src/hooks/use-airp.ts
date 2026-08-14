@@ -27,7 +27,22 @@ export function useTurnMutation() {
         const post = optimistic.posts.find((item) => item.id === input.postId);
         if (post) post.metrics.replies += 1;
       } else {
-        optimistic.messages.push({ id, threadId: input.threadId, senderId: "account-player", createdAt: optimistic.mvu.storyTime, text: input.text, status: "sent", ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), isPlayerInput: true });
+        const conversation = input as typeof input & { speechSegments?: string[]; text?: string };
+        const speechSegments = conversation.speechSegments?.filter((text) => text.trim()) ?? (conversation.text?.trim() ? [conversation.text.trim()] : []);
+        for (const [bubbleOrder, text] of speechSegments.entries()) {
+          optimistic.messages.push({
+            id: `${id}-${bubbleOrder}`,
+            threadId: input.threadId,
+            senderId: "account-player",
+            createdAt: optimistic.mvu.storyTime,
+            text,
+            status: "sent",
+            ...(bubbleOrder === 0 && input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+            isPlayerInput: true,
+            turnId: id,
+            bubbleOrder
+          } as AppSnapshot["messages"][number]);
+        }
       }
       client.setQueryData(["snapshot"], optimistic);
     },

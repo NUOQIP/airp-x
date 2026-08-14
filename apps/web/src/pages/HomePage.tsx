@@ -9,20 +9,19 @@ import {
   Clock3,
   Flag,
   Gauge,
-  Link as LinkIcon,
   MapPin,
   Pencil,
   Radio,
   Sparkles
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { AccountProfileEditor } from "../components/AccountProfileEditor";
 import { AvatarEditor } from "../components/AvatarEditor";
 import { BannerEditor } from "../components/BannerEditor";
 import { PostCard } from "../components/PostCard";
 import { Avatar, Empty, Spinner, Verified } from "../components/ui";
 import { useSnapshot } from "../hooks/use-airp";
 import { compactNumber, storyDate } from "../lib/format";
-import { useUiStore } from "../store/ui";
 
 const bannerClass = {
   sky: "from-sky-400 via-cyan-200 to-blue-100",
@@ -49,16 +48,12 @@ const kindMeta = {
   notice: { label: "重要说明", icon: BellRing }
 };
 
-type ProfilePage = "posts" | "live" | "about" | "records";
+type ProfilePage = "posts" | "records";
 
 const profileTabs: Array<{ value: ProfilePage; label: string }> = [
   { value: "posts", label: "帖文" },
-  { value: "live", label: "实况" },
-  { value: "about", label: "档案" },
   { value: "records", label: "记录" }
 ];
-
-const fallbackPage = { status: "live", progress: "live", facts: "about", notice: "about", stats: "records", timeline: "records" } as const;
 
 function progressValue(section: ProfileSection) {
   const text = section.items.map((item) => `${item.label ?? ""} ${item.value}`).join(" ");
@@ -132,12 +127,22 @@ function ProfileSectionCard({ section }: { section: ProfileSection }) {
   </article>;
 }
 
+function UsageNotice({ section }: { section: ProfileSection }) {
+  return <section key={section.items.map((item) => `${item.id}:${item.value}`).join("|")} className="component-refresh mt-4 overflow-hidden rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/90 to-white">
+    <div className="flex items-center gap-2 border-b border-amber-100 px-3.5 py-2.5"><BellRing size={15} className="text-amber-600" /><h2 className="text-sm font-extrabold">{section.title}</h2></div>
+    <div className="space-y-2 px-3.5 py-3">{section.items.map((item) => <div key={item.id} className="flex gap-2 text-[13px] leading-5">
+      <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-amber-500" />
+      <div className="plain-content">{item.label && <span className="font-extrabold">{item.label}：</span>}<span className={emphasisClass[item.emphasis]}>{item.value}</span></div>
+    </div>)}</div>
+  </section>;
+}
+
 export function HomePage() {
   const { data, isLoading, error } = useSnapshot();
   const [activePage, setActivePage] = useState<ProfilePage>("posts");
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [bannerEditorOpen, setBannerEditorOpen] = useState(false);
-  const profileReveal = useUiStore((state) => state.revealPlan?.panels.find((panel) => panel.kind === "profile"));
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   if (isLoading) return <div className="p-8"><Spinner label="载入主页" /></div>;
   if (!data || error) return <Empty title="主页暂时不可用" detail={error instanceof Error ? error.message : "请确认本地服务已经启动"} />;
   if (data.mvu.extensions.homepageConfigured === false) return <div>
@@ -152,25 +157,35 @@ export function HomePage() {
   </div>;
   const account = data.accounts.find((item) => item.id === data.profile.accountId);
   if (!account) return <Empty title="主页账号缺失" detail="请从备份恢复或重新建设主页。" />;
-  const posts = [...data.posts].filter((post) => post.authorId === account.id && post.moderation !== "deleted" && post.moderation !== "hidden").sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
+  const posts = [...data.posts].filter((post) => post.authorId === account.id && post.moderation !== "deleted" && post.moderation !== "hidden").sort((a, b) =>
+    Number(b.id === data.profile.pinnedPostId) - Number(a.id === data.profile.pinnedPostId) || b.createdAt.localeCompare(a.createdAt)
+  );
   const sections = [...data.profile.sections].sort((a, b) => {
-    const priority = { status: 0, stats: 1, progress: 2, facts: 3, notice: 4, timeline: 5 };
+    const priority = { facts: 0, stats: 1, timeline: 2, notice: 3, status: 4, progress: 5 };
     return priority[a.kind] - priority[b.kind] || a.order - b.order;
   });
-  const activeSections = activePage === "live" || activePage === "about" || activePage === "records"
-    ? sections.filter((section) => (section.page ?? fallbackPage[section.kind]) === activePage)
-    : [];
+  const usageSections = sections.filter((section) => (section.page as string | undefined) === "bio" || (section.kind === "notice" && /使用须知|须知/.test(section.title)));
+  const usageSectionIds = new Set(usageSections.map((section) => section.id));
+  const recordSections = sections.filter((section) => {
+    if (usageSectionIds.has(section.id) || section.kind === "status" || section.kind === "progress") return false;
+    const page = section.page as string | undefined;
+    return page === "records" || page === "about" || (!page && section.kind !== "notice");
+  }).map((section) => section.kind === "facts" ? {
+    ...section,
+    items: section.items.filter((item) => !/排卵|周期/.test(item.label ?? "") && !/(?:^|\.)cycle(?:\.|$)/.test(item.source?.path ?? ""))
+  } : section).filter((section) => section.items.length > 0);
+  const currentLocation = data.mvu.heroine.location || data.profile.location;
   const emptyCopy = { title: "主页资料已经就绪", detail: "目前还没有可展示的帖文。通过私信开启剧情后，AI 可以生成包含文字、图片、视频与直播表现的首批动态。" };
   const safeBannerUrl = data.profile.bannerUrl && /^data:image\/(?:png|jpeg|webp);base64,/i.test(data.profile.bannerUrl) ? data.profile.bannerUrl : undefined;
   return <div>
     <header className="sticky top-0 z-20 flex h-[53px] items-center border-b border-line bg-white/90 px-4 backdrop-blur-md">
-      <div className="min-w-0"><h1 className="truncate text-xl font-extrabold leading-5">{account.displayName}</h1><div className="text-xs text-muted">{compactNumber(data.profile.postCount)} 帖文</div></div>
+      <div className="min-w-0"><h1 className="truncate text-xl font-extrabold leading-5">{account.displayName}</h1><div key={`post-count:${data.profile.postCount}`} className="component-refresh text-xs text-muted">{compactNumber(data.profile.postCount)} 帖文</div></div>
     </header>
     <section>
       <div className={`profile-banner relative h-[200px] overflow-hidden bg-gradient-to-br ${bannerClass[data.profile.bannerTone]}`} style={safeBannerUrl ? { backgroundImage: `url(${safeBannerUrl})`, backgroundPosition: "center", backgroundSize: "cover" } : undefined}>
         {!safeBannerUrl && <><div className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-white/20" /><div className="absolute bottom-5 left-40 h-24 w-80 -rotate-6 rounded-full bg-white/15" /></>}
         <button type="button" onClick={() => setBannerEditorOpen(true)} className="absolute right-4 top-3 flex items-center gap-1.5 rounded-full border border-white/40 bg-black/35 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md transition hover:bg-black/55"><Pencil size={13} />编辑封面</button>
-        <div className="absolute bottom-3 right-4 flex items-center gap-1.5 rounded-full border border-white/40 bg-black/20 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"><Clock3 size={13} />{storyDate(data.profile.currentStoryTime)}</div>
+        <div className="absolute bottom-3 right-4 flex items-center gap-1.5 rounded-full border border-white/40 bg-black/20 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"><Clock3 size={13} />{storyDate(data.mvu.storyTime)}</div>
       </div>
       <div className="relative px-4 pb-5">
         <div className="absolute -top-[70px] left-4">
@@ -184,29 +199,30 @@ export function HomePage() {
             <span className="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full border-2 border-white bg-black/65 text-white shadow-lg transition group-hover:bg-accent"><Pencil size={14} /></span>
           </button>
         </div>
-        <div className="flex h-[76px] items-start justify-end gap-2 pt-3"><span className="x-secondary cursor-default">正在关注</span></div>
+        <div className="flex h-[76px] items-start justify-end pt-3"><button type="button" className="x-secondary flex items-center gap-1.5 text-sm" onClick={() => setProfileEditorOpen(true)}><Pencil size={14} />编辑资料</button></div>
         <h1 className="text-xl font-extrabold leading-6">{account.displayName}{account.verified && <Verified />}</h1>
         <div className="text-[15px] text-muted">@{account.handle}</div>
-        <p className="plain-content mt-3 text-[15px] leading-5">{account.bio}</p>
+        <p key={`bio:${account.bio}`} className="component-refresh plain-content mt-3 text-[15px] leading-5">{account.bio}</p>
+        {usageSections.map((section) => <UsageNotice key={section.id} section={section} />)}
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted">
-          {data.profile.location && <span className="flex items-center gap-1"><MapPin size={16} />{data.profile.location}</span>}
-          <span className="flex items-center gap-1"><LinkIcon size={16} />本地叙事主页</span>
+          {currentLocation && <span key={`location:${currentLocation}`} className="component-refresh flex items-center gap-1"><MapPin size={16} />{currentLocation}</span>}
           {data.profile.joinedAt && <span className="flex items-center gap-1"><CalendarDays size={16} />{data.profile.joinedAt}</span>}
         </div>
-        <div className="mt-3 flex gap-5 text-sm"><span><strong>{compactNumber(data.profile.followingCount)}</strong> <span className="text-muted">正在关注</span></span><span><strong>{compactNumber(data.profile.followerCount)}</strong> <span className="text-muted">关注者</span></span></div>
+        <div className="mt-3 flex gap-5 text-sm"><span key={`followers:${data.profile.followerCount}`} className="component-refresh"><strong>{compactNumber(data.profile.followerCount)}</strong> <span className="text-muted">关注者</span></span></div>
       </div>
     </section>
-    <nav role="tablist" aria-label="个人主页内容" className="sticky top-[53px] z-10 grid h-[53px] grid-cols-4 border-y border-line bg-white/95 text-sm font-medium backdrop-blur">
+    <nav role="tablist" aria-label="个人主页内容" className="sticky top-[53px] z-10 grid h-[53px] grid-cols-2 border-y border-line bg-white/95 text-sm font-medium backdrop-blur">
       {profileTabs.map((tab) => <button key={tab.value} role="tab" aria-selected={activePage === tab.value} onClick={() => setActivePage(tab.value)} className={`relative outline-none transition hover:bg-slate-50 focus-visible:bg-sky-50 ${activePage === tab.value ? "font-extrabold text-ink" : "text-muted"}`}>{tab.label}{activePage === tab.value && <span className="absolute bottom-0 left-1/2 h-1 w-12 -translate-x-1/2 rounded-full bg-accent" />}</button>)}
     </nav>
-    {(activePage === "live" || activePage === "about" || activePage === "records") ? <section key={activePage} style={profileReveal ? { animationDelay: `${profileReveal.delayMs}ms` } : undefined} role="tabpanel" className="reveal-item min-h-[360px] border-b border-line bg-[#f7f9f9] px-4 py-5">
-      {activeSections.length > 0 ? <div className="grid grid-cols-2 gap-3">{activeSections.map((section) => <div key={section.id} className={activeSections.length <= 2 || section.kind === "status" || section.kind === "facts" ? "col-span-2" : ""}><ProfileSectionCard section={section} /></div>)}</div> : <div className="flex min-h-72 flex-col items-center justify-center text-center"><div className="grid h-12 w-12 place-items-center rounded-full bg-white text-accent shadow-sm"><Sparkles size={22} /></div><h2 className="mt-4 text-lg font-extrabold">这个分页还没有内容</h2><p className="mt-1 text-sm text-muted">下一次建设主页或剧情更新时，AI 可以补充这里的栏目。</p></div>}
+    {activePage === "records" ? <section key={activePage} role="tabpanel" className="min-h-[360px] border-b border-line bg-[#f7f9f9] px-4 py-5">
+      {recordSections.length > 0 ? <div className="grid grid-cols-2 gap-3">{recordSections.map((section) => <div key={`${section.id}:${section.items.map((item) => item.value).join("|")}`} className={`component-refresh ${recordSections.length <= 2 || section.kind === "facts" ? "col-span-2" : ""}`}><ProfileSectionCard section={section} /></div>)}</div> : <div className="flex min-h-72 flex-col items-center justify-center text-center"><div className="grid h-12 w-12 place-items-center rounded-full bg-white text-accent shadow-sm"><Sparkles size={22} /></div><h2 className="mt-4 text-lg font-extrabold">记录页还没有内容</h2><p className="mt-1 text-sm text-muted">长期档案、统计与里程碑会集中显示在这里。</p></div>}
     </section> : <div key={activePage} role="tabpanel" className="reveal-item">
       {posts.length > 0 ? posts.map((post) => <PostCard key={post.id} post={post} snapshot={data} />) : <div className="flex min-h-[360px] flex-col items-center justify-center border-b border-line px-10 text-center">
         <div className="grid h-12 w-12 place-items-center rounded-full bg-sky-50 text-accent"><Sparkles size={22} /></div><h2 className="mt-4 text-lg font-extrabold">{emptyCopy.title}</h2><p className="mt-1 max-w-sm text-sm leading-6 text-muted">{emptyCopy.detail}</p><Link to="/messages/dm-player-heroine" className="x-primary mt-4">去私信开启剧情</Link>
       </div>}
     </div>}
     <AvatarEditor account={account} branchId={data.session.activeBranchId} open={avatarEditorOpen} onOpenChange={setAvatarEditorOpen} />
+    <AccountProfileEditor account={account} branchId={data.session.activeBranchId} open={profileEditorOpen} onOpenChange={setProfileEditorOpen} />
     <BannerEditor branchId={data.session.activeBranchId} currentTone={data.profile.bannerTone} currentUrl={data.profile.bannerUrl} open={bannerEditorOpen} onOpenChange={setBannerEditorOpen} />
   </div>;
 }

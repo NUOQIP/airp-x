@@ -2,20 +2,31 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, RefreshCw, RotateCcw } from "lucide-react";
 import { apiClient } from "../lib/api";
 import { useSnapshot } from "../hooks/use-airp";
+import { useUiStore } from "../store/ui";
 import { Spinner } from "./ui";
 
 export function HistoryControls() {
   const { data } = useSnapshot();
   const client = useQueryClient();
+  const stageReveal = useUiStore((state) => state.stageReveal);
   const latest = data?.turns.at(-1);
   const run = useMutation({
     mutationFn: async ({ action, id }: { action: "retry" | "regenerate" | "candidate" | "branch"; id: string }) => {
-      if (action === "retry") return (await apiClient.retryTurn(id)).snapshot;
-      if (action === "regenerate") return (await apiClient.regenerateTurn(id)).snapshot;
-      if (action === "candidate") return apiClient.selectCandidate(id);
-      return apiClient.activateBranch(id);
+      if (action === "retry") {
+        const result = await apiClient.retryTurn(id);
+        return { snapshot: result.snapshot, renderPlan: result.renderPlan };
+      }
+      if (action === "regenerate") {
+        const result = await apiClient.regenerateTurn(id);
+        return { snapshot: result.snapshot, renderPlan: result.renderPlan };
+      }
+      if (action === "candidate") return { snapshot: await apiClient.selectCandidate(id) };
+      return { snapshot: await apiClient.activateBranch(id) };
     },
-    onSuccess: (snapshot) => client.setQueryData(["snapshot"], snapshot)
+    onSuccess: ({ snapshot, renderPlan }) => {
+      client.setQueryData(["snapshot"], snapshot);
+      if (renderPlan) stageReveal(renderPlan);
+    }
   });
   return <section className="rounded-2xl border border-line bg-white p-4">
     <div className="flex items-center justify-between"><h2 className="font-extrabold">会话状态</h2><GitBranch size={18} /></div>
@@ -34,4 +45,3 @@ export function HistoryControls() {
     </div>}
   </section>;
 }
-

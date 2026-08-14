@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { HomepageDraftSchema, StorySnapshotSchema, type HomepageDraft, type StorySnapshot } from "@airp/shared";
+import { HomepageDraftSchema, StorySnapshotSchema, type HomepageDraft } from "@airp/shared";
 import { db } from "../db/client.js";
 import { branches, checkpoints, turns } from "../db/schema.js";
 import { HEROINE_ID, PLAYER_ID, createBlankStorySnapshot, ensureHeroineCoverIdentity } from "../db/defaults.js";
@@ -9,6 +9,8 @@ import { ContextBudgetError, type ContextBreakdown } from "./context-service.js"
 import { getAppSnapshot } from "./turn-service.js";
 import { withBranchLock } from "./branch-lock.js";
 import { conflict, notFound } from "./http-error.js";
+import { migrateStorySnapshotV2 } from "./snapshot-migration.js";
+import { storyTimeMinusDays } from "./state-derived-service.js";
 
 const estimateTokens = (text: string) => Math.ceil(text.length / 3.2);
 
@@ -48,7 +50,7 @@ async function applyHomepageDraftUnlocked(branchId: string, sourceText: string, 
   const player = current.accounts.find((account) => account.id === PLAYER_ID)
     ?? fallback.accounts.find((account) => account.id === PLAYER_ID)!;
   const storyTime = draft.profile.currentStoryTime;
-  const next: StorySnapshot = {
+  const next = migrateStorySnapshotV2({
     accounts: [
       {
         id: HEROINE_ID,
@@ -67,7 +69,6 @@ async function applyHomepageDraftUnlocked(branchId: string, sourceText: string, 
       bannerTone: draft.profile.bannerTone,
       location: draft.profile.location,
       joinedAt: draft.profile.joinedAt,
-      followingCount: draft.profile.followingCount,
       followerCount: draft.profile.followerCount,
       postCount: 0,
       currentStoryTime: storyTime,
@@ -90,20 +91,39 @@ async function applyHomepageDraftUnlocked(branchId: string, sourceText: string, 
       revision: current.mvu.revision + 1,
       storyTime,
       heroine: {
-        ...draft.heroineState,
+        status: draft.heroineState.status,
+        bio: draft.account.bio,
+        usageNotice: {},
+        profileFacts: {},
+        mood: draft.heroineState.mood,
+        location: draft.heroineState.location,
+        activity: draft.heroineState.activity,
+        outfit: draft.heroineState.outfit,
+        cycle: {
+          anchorDate: storyTimeMinusDays(storyTime, 3),
+          pregnancy: draft.heroineState.pregnancy
+        },
+        statistics: { inseminationEvents: [] },
         relationship: current.mvu.heroine.relationship
       },
       player: current.mvu.player,
-      platform: { activeTrends: [], flags: {} },
+      platform: {
+        activeTrends: [],
+        appliedImpactIds: [],
+        impactLedger: [],
+        fanGoals: draft.fanGoals,
+        flags: {}
+      },
       extensions: {
         ...current.mvu.extensions,
         homepageConfigured: true,
         homepageSource: sourceText
-      }
+      },
+      derived: current.mvu.derived
     },
     trends: [],
     notices: []
-  };
+  });
 
   const now = new Date().toISOString();
   const snapshotJson = JSON.stringify(ensureHeroineCoverIdentity(next));

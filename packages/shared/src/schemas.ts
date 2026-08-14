@@ -5,6 +5,9 @@ const plainText = z.string().max(12_000);
 const shortText = z.string().max(280);
 const storyTime = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:\d{2})?$/);
 
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const safeSourcePart = (value: unknown, fallback: string) => typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value) ? value : fallback;
+
 const invalidAvatarControls = /[\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
 
 export const AvatarTextSchema = z.string().trim().max(64).refine((value) => {
@@ -93,7 +96,9 @@ export const MessageSchema = z.object({
   text: plainText,
   status: z.enum(["sent", "delivered", "read"]).default("read"),
   replyToMessageId: id.optional(),
-  isPlayerInput: z.boolean().default(false)
+  isPlayerInput: z.boolean().default(false),
+  turnId: id.optional(),
+  bubbleOrder: z.number().int().nonnegative().optional()
 }).strict();
 
 export const ThreadSchema = z.object({
@@ -127,43 +132,227 @@ export const LiveSessionSchema = z.object({
   queue: z.array(LiveQueueItemSchema).max(500)
 }).strict();
 
-export const ProfileSectionSchema = z.object({
+export const ProfilePermissionSchema = z.enum(["locked", "temporary", "computed", "append_only"]);
+export const ProfileContentOriginSchema = z.enum(["initial", "ai"]);
+export const ProfileItemSourceSchema = z.object({
+  kind: z.enum(["literal", "mvu", "derived", "profile", "platform", "event_log"]),
+  path: z.string().min(1).max(240).regex(/^[A-Za-z0-9_.-]+$/)
+}).strict();
+
+const legacyPermission = (value: unknown, kind: unknown) => {
+  if (value === "computed") return "computed" as const;
+  if (value === "temporary" || value === "ai_mutable") return kind === "timeline" ? "append_only" as const : "temporary" as const;
+  return kind === "timeline" ? "append_only" as const : "locked" as const;
+};
+
+const legacyPage = (value: unknown, kind: unknown) => {
+  if (value === "sidebar" || value === "bio" || value === "records") return value;
+  if (value === "live") return "sidebar" as const;
+  if (value === "about") return kind === "notice" ? "bio" as const : "records" as const;
+  if (kind === "status" || kind === "progress") return "sidebar" as const;
+  if (kind === "notice") return "bio" as const;
+  return "records" as const;
+};
+
+const knownTemporarySources: Record<string, string> = {
+  "status-status": "heroine.status",
+  "status-current": "heroine.status",
+  "current-status": "heroine.status",
+  "status-location": "heroine.location",
+  "status-activity": "heroine.activity",
+  "current-activity": "heroine.activity",
+  "status-outfit": "heroine.outfit",
+  "current-outfit": "heroine.outfit",
+  "status-mood": "heroine.mood",
+  "current-mood": "heroine.mood"
+};
+
+function migrateLegacyProfileSection(value: unknown) {
+  if (!isRecord(value)) return value;
+  const sectionId = safeSourcePart(value.id, "section");
+  const sectionOrigin = value.origin === "ai" ? "ai" : "initial";
+  const permission = legacyPermission(value.mutablePolicy, value.kind);
+  const items = Array.isArray(value.items) ? value.items.map((rawItem, index) => {
+    if (!isRecord(rawItem)) return rawItem;
+    const itemId = safeSourcePart(rawItem.id, `item-${index}`);
+    const itemPermission = ProfilePermissionSchema.safeParse(rawItem.permission).success ? rawItem.permission : permission;
+    let source = rawItem.source;
+    if (!isRecord(source)) {
+      if (itemPermission === "temporary") {
+        const path = knownTemporarySources[itemId] ?? `extensions.profileTemporary.${sectionId}.${itemId}`;
+        source = { kind: "mvu", path };
+      } else if (itemPermission === "computed") {
+        source = { kind: "derived", path: `profile.${sectionId}.${itemId}` };
+      } else if (itemPermission === "append_only") {
+        source = { kind: "event_log", path: `profile.sections.${sectionId}.items` };
+      } else {
+        source = { kind: "literal", path: `profile.sections.${sectionId}.items.${itemId}.value` };
+      }
+    }
+    return {
+      ...rawItem,
+      permission: itemPermission,
+      origin: rawItem.origin === "ai" ? "ai" : sectionOrigin,
+      source
+    };
+  }) : value.items;
+  const { mutablePolicy: _legacyMutablePolicy, ...rest } = value;
+  return { ...rest, page: legacyPage(value.page, value.kind), origin: sectionOrigin, items };
+}
+
+export const ProfileSectionItemSchema = z.object({
+  id,
+  label: z.string().max(120).optional(),
+  value: plainText,
+  emphasis: z.enum(["normal", "accent", "success", "warning", "danger"]).default("normal"),
+  permission: ProfilePermissionSchema,
+  origin: ProfileContentOriginSchema,
+  source: ProfileItemSourceSchema
+}).strict();
+
+export const ProfileSectionSchema = z.preprocess(migrateLegacyProfileSection, z.object({
   id,
   title: z.string().min(1).max(100),
   kind: z.enum(["facts", "stats", "progress", "timeline", "status", "notice"]),
-  page: z.enum(["live", "about", "records"]).optional(),
+  page: z.enum(["sidebar", "bio", "records"]),
   order: z.number().int(),
-  mutablePolicy: z.enum(["fixed", "ai_mutable", "computed", "manual", "temporary"]),
-  items: z.array(z.object({
-    id,
-    label: z.string().max(120).optional(),
-    value: plainText,
-    emphasis: z.enum(["normal", "accent", "success", "warning", "danger"]).default("normal")
-  }).strict()).max(50)
-}).strict();
+  origin: ProfileContentOriginSchema,
+  items: z.array(ProfileSectionItemSchema).max(50)
+}).strict());
 
-export const HeroineProfileSchema = z.object({
+function migrateLegacyProfile(value: unknown) {
+  if (!isRecord(value)) return value;
+  const { followingCount: _legacyFollowingCount, ...rest } = value;
+  return rest;
+}
+
+export const HeroineProfileSchema = z.preprocess(migrateLegacyProfile, z.object({
   accountId: id,
   bannerTone: z.enum(["sky", "rose", "violet", "amber", "night"]).default("sky"),
   bannerUrl: z.string().max(750_000).optional(),
   location: z.string().max(120).default(""),
   joinedAt: z.string().max(40).default(""),
-  followingCount: z.number().int().nonnegative(),
   followerCount: z.number().int().nonnegative(),
   postCount: z.number().int().nonnegative(),
   currentStoryTime: storyTime,
   pinnedPostId: id.optional(),
   sections: z.array(ProfileSectionSchema).max(30)
+}).strict());
+
+export const InseminationRecordSchema = z.object({
+  id,
+  occurredAt: storyTime,
+  count: z.number().int().positive(),
+  volumeMl: z.number().int().nonnegative(),
+  note: z.string().max(1_000).optional()
 }).strict();
 
-export const MvuStateSchema = z.object({
+export const CyclePregnancySchema = z.object({
+  status: z.enum(["none", "suspected", "confirmed", "ended"]),
+  suspectedAt: storyTime.optional(),
+  confirmedAt: storyTime.optional(),
+  conceptionAt: storyTime.optional(),
+  durationDays: z.number().int().min(1).max(2_000).optional(),
+  endedAt: storyTime.optional()
+}).strict().superRefine((value, context) => {
+  if (value.status === "confirmed" && (!value.confirmedAt || !value.conceptionAt || !value.durationDays)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "confirmed pregnancy requires confirmedAt, conceptionAt and durationDays" });
+  }
+  if (value.status === "ended" && !value.endedAt) context.addIssue({ code: z.ZodIssueCode.custom, message: "ended pregnancy requires endedAt" });
+});
+
+export const FanGoalSchema = z.object({
+  id,
+  targetFollowers: z.number().int().positive(),
+  reward: z.string().max(4_000),
+  createdAt: storyTime
+}).strict();
+
+export const PlatformImpactLedgerEntrySchema = z.object({
+  id,
+  target: z.enum(["profile", "post"]),
+  targetId: id,
+  kind: z.enum(["growth", "viral", "limited", "controversy", "controversy_positive", "controversy_negative", "steady", "backlash"]),
+  scale: z.enum(["small", "medium", "large"]),
+  exposure: z.number().int().nonnegative(),
+  followerDelta: z.number().int(),
+  metricsDelta: MetricsSchema,
+  appliedAt: storyTime
+}).strict();
+
+export const DerivedCycleSchema = z.object({
+  phase: z.enum(["menstruation", "follicular", "ovulation", "luteal", "suspected", "pregnant"]),
+  cycleDay: z.number().int().min(1).max(7),
+  nextChangeAt: storyTime,
+  pregnancy: z.object({
+    status: z.enum(["confirmed"]),
+    elapsedDays: z.number().int().nonnegative(),
+    durationDays: z.number().int().positive(),
+    progressPercent: z.number().min(0).max(100),
+    stage: z.enum(["early", "middle", "late"]),
+    nextChangeAt: storyTime
+  }).strict().optional()
+}).strict();
+
+export const DerivedStatisticsSchema = z.object({
+  todayCount: z.number().int().nonnegative(),
+  totalCount: z.number().int().nonnegative(),
+  totalVolumeMl: z.number().int().nonnegative(),
+  nextDailyResetAt: storyTime,
+  lastRecord: InseminationRecordSchema.optional()
+}).strict();
+
+export const DerivedFanPlanSchema = z.object({
+  activeGoalId: id,
+  targetFollowers: z.number().int().positive(),
+  currentFollowers: z.number().int().nonnegative(),
+  progressPercent: z.number().min(0).max(100),
+  reward: z.string().max(4_000),
+  completed: z.boolean(),
+  nextTargetFollowers: z.number().int().positive().optional()
+}).strict();
+
+function migrateLegacyMvu(value: unknown) {
+  if (!isRecord(value)) return value;
+  const heroine = isRecord(value.heroine) ? { ...value.heroine } : {};
+  const platform = isRecord(value.platform) ? { ...value.platform } : {};
+  const extensions = isRecord(value.extensions) ? value.extensions : {};
+  const story = typeof value.storyTime === "string" ? value.storyTime : "2026-01-01T00:00+08:00";
+  heroine.status ??= "";
+  heroine.bio ??= "";
+  heroine.usageNotice ??= {};
+  heroine.profileFacts ??= {};
+  heroine.cycle ??= { anchorDate: story, pregnancy: { status: "none" } };
+  heroine.statistics ??= { inseminationEvents: [] };
+  platform.appliedImpactIds ??= [];
+  platform.impactLedger ??= [];
+  platform.fanGoals ??= [];
+  const derived = isRecord(value.derived) ? value.derived : {
+    cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: story },
+    statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: story }
+  };
+  return { ...value, heroine, platform, extensions, derived };
+}
+
+export const MvuStateSchema = z.preprocess(migrateLegacyMvu, z.object({
   revision: z.number().int().nonnegative(),
   storyTime,
   heroine: z.object({
+    status: z.string().max(500),
+    bio: z.string().max(1_000),
+    usageNotice: z.record(z.string(), plainText),
+    profileFacts: z.record(z.string(), plainText),
     mood: z.string().max(500).default(""),
-    location: z.string().max(200).default(""),
+    location: z.string().max(120).default(""),
     activity: z.string().max(500).default(""),
     outfit: z.string().max(1_000).default(""),
+    cycle: z.object({
+      anchorDate: storyTime,
+      pregnancy: CyclePregnancySchema
+    }).strict(),
+    statistics: z.object({
+      inseminationEvents: z.array(InseminationRecordSchema).max(20_000)
+    }).strict(),
     relationship: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({})
   }).strict(),
   player: z.object({
@@ -171,10 +360,18 @@ export const MvuStateSchema = z.object({
   }).strict(),
   platform: z.object({
     activeTrends: z.array(z.string().max(100)).max(20).default([]),
+    appliedImpactIds: z.array(id).max(20_000),
+    impactLedger: z.array(PlatformImpactLedgerEntrySchema).max(20_000),
+    fanGoals: z.array(FanGoalSchema).max(100),
     flags: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({})
   }).strict(),
-  extensions: z.record(z.string(), z.unknown()).default({})
-}).strict();
+  extensions: z.record(z.string(), z.unknown()).default({}),
+  derived: z.object({
+    cycle: DerivedCycleSchema,
+    statistics: DerivedStatisticsSchema,
+    fanPlan: DerivedFanPlanSchema.optional()
+  }).strict()
+}).strict());
 
 const ScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -185,10 +382,14 @@ export const MvuOperationSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("remove"), path: z.string().regex(/^[A-Za-z0-9_.-]+$/) }).strict()
 ]);
 
+const computedMetricsDefault = { replies: 0, reposts: 0, likes: 0, views: 0, bookmarks: 0 } as const;
+const AiCreatedPostSchema = PostSchema.extend({ metrics: MetricsSchema.default(computedMetricsDefault) });
+const AiCreatedCommentSchema = CommentSchema.extend({ metrics: MetricsSchema.default(computedMetricsDefault) });
 const UpsertAccountEvent = z.object({ type: z.literal("account.upsert"), account: AccountSchema }).strict();
-const UpsertPostEvent = z.object({ type: z.literal("post.upsert"), post: PostSchema }).strict();
+const UpsertPostEvent = z.object({ type: z.literal("post.upsert"), post: AiCreatedPostSchema }).strict();
 const RemovePostEvent = z.object({ type: z.literal("post.remove"), postId: id, reason: z.string().max(240).optional() }).strict();
-const UpsertCommentEvent = z.object({ type: z.literal("comment.upsert"), comment: CommentSchema }).strict();
+const ModeratePostEvent = z.object({ type: z.literal("post.moderate"), postId: id, moderation: z.enum(["visible", "limited", "hidden", "deleted"]) }).strict();
+const UpsertCommentEvent = z.object({ type: z.literal("comment.upsert"), comment: AiCreatedCommentSchema }).strict();
 const ModerateCommentEvent = z.object({ type: z.literal("comment.moderate"), commentId: id, moderation: z.enum(["visible", "limited", "hidden", "deleted"]) }).strict();
 const UpsertThreadEvent = z.object({ type: z.literal("thread.upsert"), thread: ThreadSchema }).strict();
 const AddMessageEvent = z.object({ type: z.literal("message.add"), message: MessageSchema }).strict();
@@ -203,32 +404,78 @@ const ProfilePatchEvent = z.object({
     removeSectionIds: z.array(id).max(12).default([])
   }).strict()
 }).strict();
+const AppendProfileItemEvent = z.object({
+  type: z.literal("profile.item.append"),
+  sectionId: id,
+  item: ProfileSectionItemSchema
+}).strict();
+const RemoveProfileItemEvent = z.object({
+  type: z.literal("profile.item.remove"),
+  sectionId: id,
+  itemId: id
+}).strict();
+const AddProfileItemEvent = z.object({
+  type: z.literal("profile.item.add"),
+  sectionId: id,
+  item: ProfileSectionItemSchema
+}).strict();
+const AppendInseminationRecordEvent = z.object({
+  type: z.literal("statistics.insemination.append"),
+  record: InseminationRecordSchema
+}).strict();
+const AddFanGoalEvent = z.object({
+  type: z.literal("fan.goal.add"),
+  goal: FanGoalSchema
+}).strict();
+const UpsertFanGoalEvent = z.object({
+  type: z.literal("fan.goal.upsert"),
+  goal: FanGoalSchema
+}).strict();
 const PollVoteEvent = z.object({ type: z.literal("poll.resolve"), postId: id, poll: PollSchema }).strict();
 const PlatformImpactEvent = z.object({
   type: z.literal("platform.impact"),
   id,
   target: z.enum(["profile", "post"]),
   targetId: id,
-  kind: z.enum(["growth", "viral", "limited", "controversy", "steady"]),
+  kind: z.enum(["growth", "viral", "limited", "controversy", "controversy_positive", "controversy_negative", "steady", "backlash"]),
   scale: z.enum(["small", "medium", "large"])
 }).strict();
 const PlatformNoticeEvent = z.object({ type: z.literal("platform.notice"), id, level: z.enum(["info", "success", "warning", "danger"]), text: plainText, createdAt: storyTime }).strict();
 const TrendEvent = z.object({ type: z.literal("platform.trends"), trends: z.array(z.object({ label: z.string().max(100), volumeLabel: z.string().max(60), rank: z.number().int().positive() }).strict()).max(20) }).strict();
+const UpsertTrendEvent = z.object({
+  type: z.literal("platform.trend.upsert"),
+  trend: z.object({
+    id,
+    label: z.string().min(1).max(100),
+    heat: z.enum(["low", "medium", "high", "viral"]),
+    updatedAt: storyTime
+  }).strict()
+}).strict();
+const RemoveTrendEvent = z.object({ type: z.literal("platform.trend.remove"), trendId: id }).strict();
 
 export const DomainEventSchema = z.discriminatedUnion("type", [
   UpsertAccountEvent,
   UpsertPostEvent,
   RemovePostEvent,
+  ModeratePostEvent,
   UpsertCommentEvent,
   ModerateCommentEvent,
   UpsertThreadEvent,
   AddMessageEvent,
   UpsertLiveEvent,
   ProfilePatchEvent,
+  AppendProfileItemEvent,
+  AddProfileItemEvent,
+  RemoveProfileItemEvent,
+  AppendInseminationRecordEvent,
+  AddFanGoalEvent,
+  UpsertFanGoalEvent,
   PollVoteEvent,
   PlatformImpactEvent,
   PlatformNoticeEvent,
-  TrendEvent
+  TrendEvent,
+  UpsertTrendEvent,
+  RemoveTrendEvent
 ]);
 
 export const RenderPlanSchema = z.object({
@@ -238,9 +485,29 @@ export const RenderPlanSchema = z.object({
     targetId: id.optional(),
     revealOrder: z.number().int().nonnegative(),
     delayMs: z.number().int().min(0).max(8_000)
-  }).strict()).min(1).max(8),
+  }).strict()).min(0).max(8),
   focus: z.object({ kind: z.enum(["home", "post", "dm", "group", "live"]), targetId: id.optional() }).strict().optional()
 }).strict();
+
+export const TrendSchema = z.preprocess((value) => {
+  if (!isRecord(value)) return value;
+  const label = typeof value.label === "string" ? value.label : "trend";
+  const volumeMatch = typeof value.volumeLabel === "string" ? value.volumeLabel.replace(/,/g, "").match(/[\d.]+/) : undefined;
+  const parsedVolume = volumeMatch ? Number(volumeMatch[0]) * (/K/i.test(value.volumeLabel as string) ? 1_000 : 1) : 0;
+  return {
+    ...value,
+    id: value.id ?? `trend-${safeSourcePart(label.toLocaleLowerCase().replace(/[^a-z0-9_-]+/g, "-"), "legacy")}`,
+    heatScore: value.heatScore ?? Math.max(1, Math.round(parsedVolume)),
+    updatedAt: value.updatedAt ?? "2026-01-01T00:00+08:00"
+  };
+}, z.object({
+  id,
+  label: z.string().max(100),
+  volumeLabel: z.string().max(60),
+  rank: z.number().int().positive(),
+  heatScore: z.number().int().nonnegative(),
+  updatedAt: storyTime
+}).strict());
 
 export const StorySnapshotSchema = z.object({
   accounts: z.array(AccountSchema),
@@ -251,11 +518,7 @@ export const StorySnapshotSchema = z.object({
   messages: z.array(MessageSchema),
   lives: z.array(LiveSessionSchema),
   mvu: MvuStateSchema,
-  trends: z.array(z.object({
-    label: z.string().max(100),
-    volumeLabel: z.string().max(60),
-    rank: z.number().int().positive()
-  }).strict()).max(20),
+  trends: z.array(TrendSchema).max(20),
   notices: z.array(z.object({
     id,
     level: z.enum(["info", "success", "warning", "danger"]),
@@ -268,16 +531,30 @@ export const StorySnapshotSchema = z.object({
 export const AiTurnOutputSchema = z.object({
   schemaVersion: z.literal("1.0"),
   storyTime,
-  events: z.array(DomainEventSchema).min(1).max(100),
+  events: z.array(DomainEventSchema).max(100),
   mvuOperations: z.array(MvuOperationSchema).max(100),
   renderPlan: RenderPlanSchema,
   memoryNote: z.string().max(4_000).optional()
 }).strict();
 
-export const PlayerTurnInputSchema = z.discriminatedUnion("kind", [
+const SpeechTurnInputSchema = z.object({
+  kind: z.enum(["dm", "group"]),
+  branchId: id,
+  threadId: id,
+  replyToMessageId: id.optional(),
+  speechSegments: z.array(z.string().trim().min(1).max(12_000)).max(20),
+  directorInstruction: z.string().trim().max(12_000).optional()
+}).strict().superRefine((value, context) => {
+  if (value.speechSegments.length === 0 && !value.directorInstruction) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "speechSegments or directorInstruction is required" });
+  }
+  const totalLength = value.speechSegments.reduce((sum, segment) => sum + segment.length, 0) + (value.directorInstruction?.length ?? 0);
+  if (totalLength > 12_000) context.addIssue({ code: z.ZodIssueCode.custom, message: "speechSegments and directorInstruction must total at most 12000 characters" });
+});
+
+export const PlayerTurnInputSchema = z.union([
   z.object({ kind: z.literal("comment"), branchId: id, postId: id, parentCommentId: id.optional(), text: z.string().min(1).max(12_000) }).strict(),
-  z.object({ kind: z.literal("dm"), branchId: id, threadId: id, replyToMessageId: id.optional(), text: z.string().min(1).max(12_000) }).strict(),
-  z.object({ kind: z.literal("group"), branchId: id, threadId: id, replyToMessageId: id.optional(), text: z.string().min(1).max(12_000) }).strict()
+  SpeechTurnInputSchema
 ]);
 
 export const LocalActionSchema = z.discriminatedUnion("kind", [
@@ -400,7 +677,7 @@ export const HomepageDraftSchema = z.object({
   account: z.object({
     displayName: z.string().min(1).max(80),
     handle: z.string().regex(/^[A-Za-z0-9_]{1,30}$/),
-    bio: z.string().max(4_000),
+    bio: z.string().max(1_000),
     verified: z.boolean(),
     isPrivate: z.boolean()
   }).strict(),
@@ -408,18 +685,20 @@ export const HomepageDraftSchema = z.object({
     bannerTone: z.enum(["sky", "rose", "violet", "amber", "night"]),
     location: z.string().max(120),
     joinedAt: z.string().max(40),
-    followingCount: z.number().int().nonnegative(),
     followerCount: z.number().int().nonnegative(),
     postCount: z.number().int().nonnegative(),
     currentStoryTime: storyTime,
     sections: z.array(ProfileSectionSchema).min(1).max(30)
   }).strict(),
   heroineState: z.object({
+    status: z.string().max(500).default(""),
     mood: z.string().max(500),
-    location: z.string().max(200),
+    location: z.string().max(120),
     activity: z.string().max(500),
-    outfit: z.string().max(1_000)
+    outfit: z.string().max(1_000),
+    pregnancy: CyclePregnancySchema.default({ status: "none" })
   }).strict(),
+  fanGoals: z.array(FanGoalSchema).max(100).default([]),
   notes: z.array(z.string().max(500)).max(20)
 }).strict();
 
@@ -435,7 +714,12 @@ export type LiveSession = z.infer<typeof LiveSessionSchema>;
 export type LiveQueueItem = z.infer<typeof LiveQueueItemSchema>;
 export type HeroineProfile = z.infer<typeof HeroineProfileSchema>;
 export type ProfileSection = z.infer<typeof ProfileSectionSchema>;
+export type ProfileSectionItem = z.infer<typeof ProfileSectionItemSchema>;
+export type ProfilePermission = z.infer<typeof ProfilePermissionSchema>;
 export type MvuState = z.infer<typeof MvuStateSchema>;
+export type InseminationRecord = z.infer<typeof InseminationRecordSchema>;
+export type FanGoal = z.infer<typeof FanGoalSchema>;
+export type Trend = z.infer<typeof TrendSchema>;
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
 export type AiTurnOutput = z.infer<typeof AiTurnOutputSchema>;
 export type PlayerTurnInput = z.infer<typeof PlayerTurnInputSchema>;

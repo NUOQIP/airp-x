@@ -38,11 +38,13 @@ original_rule: |-
   </X>`;
 
 describe("rule YAML", () => {
-  it("parses fixed accounts, hard constraints, and the untouched original block", () => {
+  it("upgrades fixed accounts and hard constraints while preserving the original block", () => {
     const parsed = assertRuleConfig(yamlRule);
     expect(parsed.accounts.heroine_private.id).toBe("account-heroine");
     expect(parsed.hard_constraints.posts.representative_comments).toBe(15);
-    expect(parsed.original_rule).toBe("<X>\n原始内容不改\n</X>");
+    expect(parsed.hard_constraints.profile.require_profile_panel).toBe(false);
+    expect(parsed.original_rule.startsWith("<X>\n原始内容不改\n</X>")).toBe(true);
+    expect(parsed.original_rule).toContain("【主页权限与唯一数据源 v2】");
   });
 
   it("rejects a drifting fixed account identity", () => {

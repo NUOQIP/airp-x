@@ -2,12 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { AiTurnOutputSchema, LocalActionSchema, StorySnapshotSchema } from "@airp/shared";
+import { AiTurnOutputSchema, LocalActionSchema } from "@airp/shared";
 import { config } from "../config.js";
 import { db } from "../db/client.js";
 import { compileSafeRegex } from "./regex-safety.js";
 import { inspectImageDataUrl } from "./image-data-url.js";
 import { beginBranchMaintenance } from "./branch-lock.js";
+import { migrateStorySnapshotJson, migrateStorySnapshotV2 } from "./snapshot-migration.js";
 import {
   branches,
   checkpoints,
@@ -36,6 +37,13 @@ const jsonArrayText = z.string().superRefine((value, context) => {
   try { if (!Array.isArray(JSON.parse(value))) throw new Error("not array"); }
   catch { context.addIssue({ code: z.ZodIssueCode.custom, message: "字段必须是 JSON 数组" }); }
 });
+const snapshotJsonText = (label: string) => z.string().transform((value, context) => {
+  try { return migrateStorySnapshotJson(value); }
+  catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: `${label} 不是有效的主页状态快照` });
+    return z.NEVER;
+  }
+});
 
 const SettingRow = z.object({ key: id, value: z.string(), updatedAt: timestamp }).strict();
 const RoleCardRow = z.object({ id, role: z.enum(["player", "heroine"]), name: z.string(), version: z.string(), rawText: z.string(), active: z.boolean(), ...timestamps }).strict();
@@ -52,10 +60,15 @@ const WorldbookEntryRow = z.object({
 }).strict();
 const RuleRow = z.object({ id, name: z.string(), rawText: z.string(), minProfileChanges: z.number().int(), minPanels: z.number().int(), maxPanels: z.number().int(), representativeComments: z.number().int(), active: z.boolean(), ...timestamps }).strict();
 const SessionRow = z.object({ id, name: z.string(), activeBranchId: id, ...timestamps }).strict();
-const BranchRow = z.object({ id, sessionId: id, name: z.string(), parentBranchId: id.nullable(), forkedFromTurnId: id.nullable(), currentSnapshotJson: jsonText(StorySnapshotSchema, "分支快照"), rollingSummary: z.string(), pendingActionsJson: jsonArrayText, ...timestamps }).strict();
-const TurnRow = z.object({ id, branchId: id, sequence: z.number().int().nonnegative(), status: z.enum(["pending", "complete", "failed"]), inputKind: z.enum(["comment", "dm", "group", "seed"]), inputTargetId: id, inputParentId: id.nullable(), inputText: z.string(), inputRecordId: id, baseSnapshotJson: jsonText(StorySnapshotSchema, "回合基础快照"), error: z.string().nullable(), ...timestamps }).strict();
-const CandidateRow = z.object({ id, turnId: id, outputJson: jsonText(AiTurnOutputSchema, "候选输出"), snapshotJson: jsonText(StorySnapshotSchema, "候选快照"), summaryText: z.string(), active: z.boolean(), createdAt: timestamp }).strict();
-const CheckpointRow = z.object({ id, branchId: id, turnId: id.nullable(), sequence: z.number().int().nonnegative(), snapshotJson: jsonText(StorySnapshotSchema, "检查点快照"), summaryText: z.string(), createdAt: timestamp }).strict();
+const BranchRow = z.object({ id, sessionId: id, name: z.string(), parentBranchId: id.nullable(), forkedFromTurnId: id.nullable(), currentSnapshotJson: snapshotJsonText("分支快照"), rollingSummary: z.string(), pendingActionsJson: jsonArrayText, ...timestamps }).strict();
+const TurnRow = z.object({
+  id, branchId: id, sequence: z.number().int().nonnegative(), status: z.enum(["pending", "complete", "failed"]), inputKind: z.enum(["comment", "dm", "group", "seed"]),
+  inputTargetId: id, inputParentId: id.nullable(), inputText: z.string(), inputRecordId: id,
+  inputSegmentsJson: jsonArrayText.default("[]"), inputRecordIdsJson: jsonArrayText.default("[]"), directorInstruction: z.string().nullable().default(null),
+  baseSnapshotJson: snapshotJsonText("回合基础快照"), error: z.string().nullable(), ...timestamps
+}).strict();
+const CandidateRow = z.object({ id, turnId: id, outputJson: jsonText(AiTurnOutputSchema, "候选输出"), snapshotJson: snapshotJsonText("候选快照"), summaryText: z.string(), active: z.boolean(), createdAt: timestamp }).strict();
+const CheckpointRow = z.object({ id, branchId: id, turnId: id.nullable(), sequence: z.number().int().nonnegative(), snapshotJson: snapshotJsonText("检查点快照"), summaryText: z.string(), createdAt: timestamp }).strict();
 const LocalActionRow = z.object({ id, branchId: id, kind: z.string(), targetId: id, valueJson: jsonText(LocalActionSchema, "本地动作"), consumedAt: timestamp.nullable(), createdAt: timestamp }).strict();
 const MacroRow = z.object({ id, name: z.string(), value: z.string(), scope: z.enum(["global", "player", "heroine", "session"]), enabled: z.boolean(), ...timestamps }).strict();
 const RegexRow = z.object({ id, name: z.string(), pattern: z.string(), replacement: z.string(), flags: z.string(), field: z.enum(["account_text", "post_text", "comment_text", "message_text", "profile_text", "media_text", "live_text", "notice_text"]), enabled: z.boolean(), sortOrder: z.number().int(), ...timestamps }).strict();
@@ -88,7 +101,7 @@ function assertUnique(values: string[], label: string) {
 }
 
 function validateSnapshotImages(json: string) {
-  const snapshot = StorySnapshotSchema.parse(JSON.parse(json));
+  const snapshot = migrateStorySnapshotV2(JSON.parse(json));
   const urls = [snapshot.profile.bannerUrl, ...snapshot.accounts.map((account) => account.avatarUrl)];
   for (const url of urls) if (url?.startsWith("data:")) inspectImageDataUrl(url);
 }

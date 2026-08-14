@@ -11,6 +11,7 @@ import type {
   PromptPresetState,
   RuntimeSettings,
   Thread,
+  Trend,
   UserMacro,
   RegexRule,
   WorldbookEntry
@@ -43,6 +44,8 @@ export interface TurnSummary {
   status: "pending" | "complete" | "failed";
   inputKind: "comment" | "dm" | "group" | "seed";
   inputText: string;
+  inputSegments: string[];
+  directorInstruction?: string;
   createdAt: string;
   error?: string;
   candidates: Array<{ id: string; active: boolean; createdAt: string }>;
@@ -57,7 +60,7 @@ export interface StorySnapshot {
   messages: Message[];
   lives: LiveSession[];
   mvu: MvuState;
-  trends: Array<{ label: string; volumeLabel: string; rank: number }>;
+  trends: Trend[];
   notices: Array<{ id: string; level: string; text: string; createdAt: string }>;
   pendingRenderPlan?: AiTurnOutput["renderPlan"];
 }

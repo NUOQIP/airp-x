@@ -6,6 +6,9 @@ import { getPromptPresetState, getRuntimeSettings } from "./config-service.js";
 import { stringifyContextValue } from "./context-sanitizer.js";
 import { parseRuleConfig } from "./rule-config.js";
 import { buildWorldbookScanText, selectWorldbookBudget, worldbookScopeEnabled } from "./context-policy.js";
+import { buildProfileContextState, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+
+export { buildProfileContextState, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
 export interface PromptMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ContextBreakdown { label: string; estimatedTokens: number; mandatory: boolean }
@@ -51,6 +54,8 @@ function renderMacros(content: string, values: Record<string, string>) {
 }
 
 export async function assembleContext(branchId: string, input: PlayerTurnInput, snapshot: StorySnapshot, rollingSummaryOverride?: string) {
+  const visibleInput = visibleTurnText(input);
+  const directorInstruction = hiddenDirectorInstruction(input);
   const runtime = await getRuntimeSettings();
   const [branchRows, cards, prompts, rules, books, entries, recentTurns, macroRows, pendingActionRows] = await Promise.all([
     db.select().from(branches).where(eq(branches.id, branchId)).limit(1),
@@ -79,7 +84,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     player: playerCard.name,
     char: heroineCard.name,
     story_time: snapshot.mvu.storyTime,
-    input: input.text,
+    input: visibleInput,
     mvu_revision: String(snapshot.mvu.revision)
   };
   const macros = { ...customMacros(["global", "session"]), ...builtins };
@@ -101,8 +106,9 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   if (markerEnabled("heroine_card")) mandatory.push({ label: "女主角色卡", message: { role: "system", content: `# 女主角色卡（只读）\n${renderMacros(heroineCard.rawText, heroineMacros)}` } });
   const contextMvu = structuredClone(snapshot.mvu);
   delete contextMvu.extensions.homepageSource;
+  delete (contextMvu.platform as Partial<typeof contextMvu.platform>).activeTrends;
   if (markerEnabled("mvu_state")) mandatory.push({ label: "MVU 状态", message: { role: "system", content: `# 当前 MVU 状态\n${stringifyContextValue(contextMvu)}` } });
-  if (markerEnabled("profile_state")) mandatory.push({ label: "主页状态", message: { role: "system", content: `# 当前主页结构化状态\n${stringifyContextValue(snapshot.profile)}` } });
+  if (markerEnabled("profile_state")) mandatory.push({ label: "主页状态与权限注册表", message: { role: "system", content: `# 当前主页结构、唯一数据源与权限注册表\n${stringifyContextValue(buildProfileContextState(snapshot))}` } });
   if (pendingActionRows.length > 0) {
     const latestByTarget = new Map<string, unknown>();
     for (const action of pendingActionRows) {
@@ -111,9 +117,18 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     }
     mandatory.push({ label: "待消费本地操作", message: { role: "system", content: `# 玩家在平台上已执行、但尚未被剧情消费的操作\n${stringifyContextValue([...latestByTarget.values()])}` } });
   }
+  if (directorInstruction) {
+    mandatory.push({
+      label: "Master 隐藏导演指令",
+      message: {
+        role: "system",
+        content: `# Master 隐藏导演指令（仅本轮）\n${directorInstruction}\n\n该内容是全知玩家给剧情引擎的导演指令，不是諾奇的发言或知识。不得把它生成成消息、角色回忆、公开内容或 memoryNote 的指令原文。只落实其剧情意图。`
+      }
+    });
+  }
 
   const breakdown: ContextBreakdown[] = [...mandatory, ...inChatPromptMessages].map((item) => ({ label: item.label, estimatedTokens: estimateTokens(item.message.content), mandatory: true }));
-  breakdown.push({ label: "当前玩家输入", estimatedTokens: estimateTokens(input.text), mandatory: true });
+  breakdown.push({ label: "当前角色可见输入", estimatedTokens: estimateTokens(visibleInput), mandatory: true });
   const availableTokens = runtime.contextWindow - runtime.maxOutputTokens;
   const mandatoryTotal = breakdown.reduce((sum, item) => sum + item.estimatedTokens, 0);
   if (mandatoryTotal > availableTokens) throw new ContextBudgetError(breakdown, availableTokens);
@@ -124,7 +139,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const activeCandidateByTurn = new Map(recentCandidateRows.map((candidate) => [candidate.turnId, candidate]));
   const orderedRecentTurns = [...recentTurns].reverse();
   const historyLines = orderedRecentTurns.flatMap((turn) => {
-    const lines = [`[玩家/${turn.inputKind}] ${turn.inputText}`];
+    const lines = turn.inputText.trim() ? [`[玩家/${turn.inputKind}] ${turn.inputText}`] : [];
     const candidate = activeCandidateByTurn.get(turn.id);
     if (!candidate) return lines;
     try {
@@ -139,7 +154,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     comments: snapshot.comments.map((comment) => comment.text),
     messages: snapshot.messages.map((message) => message.text),
     history: historyLines,
-    currentInput: input.text
+    currentInput: visibleInput
   };
 
   const scopedBooks = books.filter((book) => worldbookScopeEnabled(book.scope, {
@@ -232,7 +247,9 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
 
   const currentInput: PromptMessage = {
     role: "user",
-    content: `# 当前玩家操作\n类型：${input.kind}\n目标：${"postId" in input ? input.postId : input.threadId}\n玩家原文：\n${input.text}`
+    content: input.kind === "comment"
+      ? `# 当前角色可见操作\n类型：comment\n目标贴文：${input.postId}\n${input.parentCommentId ? `回复评论：${input.parentCommentId}\n` : ""}諾奇发表的评论：\n${input.text}`
+      : `# 当前角色可见操作\n类型：${input.kind}\n目标会话：${input.threadId}\n${input.replyToMessageId ? `回复消息：${input.replyToMessageId}\n` : ""}諾奇分段发出的私信（数组中的每项是一个独立气泡）：\n${input.speechSegments.length ? stringifyContextValue(input.speechSegments) : "（本轮没有角色可见发言；不得虚构諾奇说过话）"}`
   };
   const byLabel = (label: string) => mandatory.find((item) => item.label === label)?.message;
   const worldbookAt = (position: WorldbookEntry["position"]) => worldbookMessages.filter((item) => item.entry.position === position).map((item) => item.message);
@@ -255,7 +272,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
           : item.marker === "heroine_card" ? [byLabel("女主角色卡")].filter((message): message is PromptMessage => Boolean(message))
             : item.marker === "worldbook_after_cards" ? worldbookAt("after_cards")
               : item.marker === "mvu_state" ? [byLabel("MVU 状态")].filter((message): message is PromptMessage => Boolean(message))
-                : item.marker === "profile_state" ? [byLabel("主页状态")].filter((message): message is PromptMessage => Boolean(message))
+                : item.marker === "profile_state" ? [byLabel("主页状态与权限注册表")].filter((message): message is PromptMessage => Boolean(message))
                   : item.marker === "worldbook_before_history" ? worldbookAt("before_history")
                     : item.marker === "rolling_memory" ? optionalByPrefix("# 滚动记忆")
                       : item.marker === "recent_history" ? optionalByPrefix("# 最近玩家回合")
@@ -271,6 +288,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   if (pendingActionMessage) {
     const currentInputIndex = stackMessages.indexOf(currentInput);
     stackMessages.splice(currentInputIndex < 0 ? stackMessages.length : currentInputIndex, 0, pendingActionMessage);
+  }
+  const directorMessage = byLabel("Master 隐藏导演指令");
+  if (directorMessage) {
+    const currentInputIndex = stackMessages.indexOf(currentInput);
+    stackMessages.splice(currentInputIndex < 0 ? stackMessages.length : currentInputIndex, 0, directorMessage);
   }
   if (!stackMessages.includes(currentInput)) stackMessages.push(currentInput);
   const atDepthMarkerOrder = activePromptPreset.items.findIndex((item) => item.kind === "marker" && item.marker === "worldbook_at_depth");
@@ -290,11 +312,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     activeWorldbookEntryIds: worldbookMessages.map((item) => item.entry.id),
     settings: runtime,
     rule: {
-      minProfileChanges: parsedRule?.hard_constraints.profile.min_real_changes ?? rule.minProfileChanges,
+      minProfileChanges: 0,
       minPanels: parsedRule?.hard_constraints.render_plan.min_panels ?? rule.minPanels,
       maxPanels: parsedRule?.hard_constraints.render_plan.max_panels ?? rule.maxPanels,
       representativeComments: parsedRule?.hard_constraints.posts.representative_comments ?? rule.representativeComments,
-      requireProfilePanel: parsedRule?.hard_constraints.profile.require_profile_panel ?? true,
+      requireProfilePanel: false,
       requireStrictRevealOrder: parsedRule?.hard_constraints.render_plan.require_strict_reveal_order ?? true,
       requireValidPanelTargets: parsedRule?.hard_constraints.render_plan.require_valid_targets ?? true,
       minLiveQueueItems: parsedRule?.hard_constraints.live.min_queue_items ?? 10,

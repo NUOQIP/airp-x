@@ -50,13 +50,14 @@ export function PostCard({ post, snapshot, detail = false }: { post: Post; snaps
   const replyTo = post.replyToPostId ? snapshot.posts.find((item) => item.id === post.replyToPostId) : undefined;
   const quoted = post.quotedPostId ? snapshot.posts.find((item) => item.id === post.quotedPostId && item.moderation !== "hidden" && item.moderation !== "deleted") : undefined;
   const quotedAuthor = quoted ? snapshot.accounts.find((item) => item.id === quoted.authorId) : undefined;
+  const pinned = snapshot.profile.pinnedPostId === post.id;
   if (!author || post.moderation === "deleted" || post.moderation === "hidden") return null;
   return <article tabIndex={detail ? undefined : 0} role={detail ? undefined : "link"} aria-label={detail ? undefined : `打开 ${author.displayName} 的帖文`} style={revealPanel ? { animationDelay: `${revealPanel.delayMs}ms` } : undefined} onKeyDown={(event) => { if (!detail && event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); navigate(`/post/${post.id}`); } }} onClick={() => !detail && navigate(`/post/${post.id}`)} className={`${detail ? "" : "cursor-pointer hover:bg-slate-50/70"} border-b border-line px-4 py-3 transition reveal-item`}>
     <div className="flex gap-3">
       <Avatar name={author.displayName} seed={author.avatarSeed} text={author.avatarText} url={author.avatarUrl} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center text-[15px]"><span className="truncate font-bold">{author.displayName}{author.verified && <Verified />}</span><span className="ml-1 truncate text-muted">@{author.handle} · {storyDate(post.createdAt)}</span></div>
-        {post.pinned && <div className="mb-1 text-xs font-bold text-muted">置顶帖文</div>}
+        {pinned && <div className="mb-1 text-xs font-bold text-muted">置顶帖文</div>}
         {replyTo && <div className="mb-1 text-xs text-muted">回复 @{snapshot.accounts.find((item) => item.id === replyTo.authorId)?.handle ?? "未知账号"}</div>}
         {(post.visibility !== "public" || post.moderation === "limited") && <div className="mb-1 flex gap-2 text-xs font-bold text-amber-600">{post.visibility === "followers" && <span>仅关注者可见</span>}{post.visibility === "private_setting" && <span>私密设定</span>}{post.moderation === "limited" && <span>可见范围受限</span>}</div>}
         <p className={`${detail ? "text-[20px] leading-7" : "text-[15px] leading-5"} plain-content mt-0.5`}>{post.text}</p>

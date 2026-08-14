@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, like } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type {
+  AiTurnOutput,
   AppSnapshot,
   LocalAction,
   PlayerTurnInput,
@@ -34,6 +35,62 @@ const parseStory = (json: string) => synchronizeDerivedProfileStats(
   StorySnapshotSchema.parse(JSON.parse(json)) as StorySnapshot
 );
 const stamp = () => new Date().toISOString();
+const MANUALLY_EDITABLE_ACCOUNT_IDS = new Set(["account-heroine", "account-heroine-cover", "account-player"]);
+
+async function applyAccountProfileOverlays(story: StorySnapshot, sessionId: string) {
+  const displayNamePrefix = `account_display_name:${sessionId}:`;
+  const verifiedPrefix = `account_verified:${sessionId}:`;
+  const [displayNameRows, verifiedRows] = await Promise.all([
+    db.select().from(settings).where(like(settings.key, `${displayNamePrefix}%`)),
+    db.select().from(settings).where(like(settings.key, `${verifiedPrefix}%`))
+  ]);
+  const displayNameByAccount = new Map(displayNameRows.map((row) => [row.key.slice(displayNamePrefix.length), row.value]));
+  const verifiedByAccount = new Map(verifiedRows.map((row) => [row.key.slice(verifiedPrefix.length), row.value === "true"]));
+  story.accounts = story.accounts.map((account) => {
+    const displayName = displayNameByAccount.get(account.id);
+    const verified = verifiedByAccount.get(account.id);
+    return displayName === undefined && verified === undefined
+      ? account
+      : { ...account, ...(displayName !== undefined ? { displayName } : {}), ...(verified !== undefined ? { verified } : {}) };
+  });
+  return story;
+}
+
+function stampGeneratedMessages(output: AiTurnOutput, turnId: string, firstBubbleOrder: number): AiTurnOutput {
+  let bubbleOrder = firstBubbleOrder;
+  return {
+    ...output,
+    events: output.events.map((event) => event.type === "message.add"
+      ? { ...event, message: { ...event.message, turnId, bubbleOrder: bubbleOrder++ } }
+      : event)
+  };
+}
+
+function segmentsFromTurn(turn: typeof turns.$inferSelect): string[] {
+  try {
+    const parsed = JSON.parse(turn.inputSegmentsJson) as unknown;
+    if (Array.isArray(parsed)) {
+      const segments = parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+      if (segments.length > 0) return segments;
+    }
+  } catch {
+    // Legacy or manually repaired rows fall back to input_text below.
+  }
+  return turn.inputText.trim().length > 0 ? [turn.inputText] : [];
+}
+
+function recordIdsFromTurn(turn: typeof turns.$inferSelect): string[] {
+  try {
+    const parsed = JSON.parse(turn.inputRecordIdsJson) as unknown;
+    if (Array.isArray(parsed)) {
+      const recordIds = parsed.filter((item): item is string => typeof item === "string" && item.length > 0);
+      if (recordIds.length > 0) return recordIds;
+    }
+  } catch {
+    // Legacy rows have one record ID in input_record_id.
+  }
+  return turn.inputRecordId ? [turn.inputRecordId] : [];
+}
 
 function inputFromTurn(turn: typeof turns.$inferSelect): PlayerTurnInput {
   if (turn.inputKind === "comment") {
@@ -51,14 +108,17 @@ function inputFromTurn(turn: typeof turns.$inferSelect): PlayerTurnInput {
     branchId: turn.branchId,
     threadId: turn.inputTargetId,
     ...(turn.inputParentId ? { replyToMessageId: turn.inputParentId } : {}),
-    text: turn.inputText
+    speechSegments: segmentsFromTurn(turn),
+    ...(turn.directorInstruction ? { directorInstruction: turn.directorInstruction } : {})
   };
 }
 
-function appendPlayerRecord(base: StorySnapshot, input: PlayerTurnInput, recordId: string): StorySnapshot {
+function appendPlayerRecords(base: StorySnapshot, input: PlayerTurnInput, recordIds: string[], turnId: string): StorySnapshot {
   const next = structuredClone(base);
   const createdAt = next.mvu.storyTime;
   if (input.kind === "comment") {
+    const recordId = recordIds[0];
+    if (!recordId) throw conflict("Comment input record ID is missing", "INPUT_RECORD_MISSING");
     const post = next.posts.find((item) => item.id === input.postId);
     if (!post || post.moderation === "deleted") throw notFound("无法评论不存在或已删除的帖文", "POST_NOT_FOUND");
     if (input.parentCommentId && !next.comments.some((item) => item.id === input.parentCommentId && item.postId === input.postId)) throw notFound("回复目标不存在", "COMMENT_NOT_FOUND");
@@ -79,17 +139,23 @@ function appendPlayerRecord(base: StorySnapshot, input: PlayerTurnInput, recordI
     if (!thread.playerCanSend || !thread.participantIds.includes(PLAYER_ID)) throw conflict("玩家不能在该会话中发送消息", "THREAD_READ_ONLY");
     if (input.kind !== thread.kind) throw conflict("会话类型不匹配", "THREAD_KIND_MISMATCH");
     if (input.replyToMessageId && !next.messages.some((item) => item.id === input.replyToMessageId && item.threadId === input.threadId)) throw notFound("回复消息不存在", "MESSAGE_NOT_FOUND");
-    next.messages.push({
-      id: recordId,
-      threadId: input.threadId,
-      senderId: PLAYER_ID,
-      createdAt,
-      text: input.text,
-      status: "sent",
-      ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
-      isPlayerInput: true
-    });
-    thread.updatedAt = createdAt;
+    for (const [bubbleOrder, text] of input.speechSegments.entries()) {
+      const recordId = recordIds[bubbleOrder];
+      if (!recordId) throw conflict("Direct-message input record ID is missing", "INPUT_RECORD_MISSING");
+      next.messages.push({
+        id: recordId,
+        threadId: input.threadId,
+        senderId: PLAYER_ID,
+        createdAt,
+        text,
+        status: "sent",
+        ...(bubbleOrder === 0 && input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}),
+        isPlayerInput: true,
+        turnId,
+        bubbleOrder
+      });
+    }
+    if (input.speechSegments.length > 0) thread.updatedAt = createdAt;
   }
   return next;
 }
@@ -123,20 +189,30 @@ export async function getAppSnapshot(branchId?: string): Promise<AppSnapshot> {
   const story = parseStory(active.currentSnapshotJson);
   const avatarTextPrefix = `avatar_text:${session.id}:`;
   const avatarUrlPrefix = `avatar_url:${session.id}:`;
+  const displayNamePrefix = `account_display_name:${session.id}:`;
+  const verifiedPrefix = `account_verified:${session.id}:`;
   const bannerToneKey = `profile_banner_tone:${session.id}`;
   const bannerUrlKey = `profile_banner_url:${session.id}`;
-  const [avatarTextRows, avatarUrlRows, bannerToneRows, bannerUrlRows] = await Promise.all([
+  const [avatarTextRows, avatarUrlRows, displayNameRows, verifiedRows, bannerToneRows, bannerUrlRows] = await Promise.all([
     db.select().from(settings).where(like(settings.key, `${avatarTextPrefix}%`)),
     db.select().from(settings).where(like(settings.key, `${avatarUrlPrefix}%`)),
+    db.select().from(settings).where(like(settings.key, `${displayNamePrefix}%`)),
+    db.select().from(settings).where(like(settings.key, `${verifiedPrefix}%`)),
     db.select().from(settings).where(eq(settings.key, bannerToneKey)).limit(1),
     db.select().from(settings).where(eq(settings.key, bannerUrlKey)).limit(1)
   ]);
   const avatarTextByAccount = new Map(avatarTextRows.map((row) => [row.key.slice(avatarTextPrefix.length), row.value]));
   const avatarUrlByAccount = new Map(avatarUrlRows.map((row) => [row.key.slice(avatarUrlPrefix.length), row.value]));
+  const displayNameByAccount = new Map(displayNameRows.map((row) => [row.key.slice(displayNamePrefix.length), row.value]));
+  const verifiedByAccount = new Map(verifiedRows.map((row) => [row.key.slice(verifiedPrefix.length), row.value === "true"]));
   story.accounts = story.accounts.map((account) => {
     const avatarText = avatarTextByAccount.get(account.id);
     const avatarUrl = avatarUrlByAccount.get(account.id);
-    return avatarText || avatarUrl ? { ...account, ...(avatarText ? { avatarText } : {}), ...(avatarUrl ? { avatarUrl } : {}) } : account;
+    const displayName = displayNameByAccount.get(account.id);
+    const verified = verifiedByAccount.get(account.id);
+    return avatarText || avatarUrl || displayName !== undefined || verified !== undefined
+      ? { ...account, ...(avatarText ? { avatarText } : {}), ...(avatarUrl ? { avatarUrl } : {}), ...(displayName !== undefined ? { displayName } : {}), ...(verified !== undefined ? { verified } : {}) }
+      : account;
   });
   const bannerTone = bannerToneRows[0]?.value as StorySnapshot["profile"]["bannerTone"] | undefined;
   const bannerUrl = bannerUrlRows[0]?.value;
@@ -149,6 +225,8 @@ export async function getAppSnapshot(branchId?: string): Promise<AppSnapshot> {
     status: turn.status,
     inputKind: turn.inputKind,
     inputText: turn.inputText,
+    inputSegments: turn.inputKind === "comment" || turn.inputKind === "seed" ? [] : segmentsFromTurn(turn),
+    ...(turn.directorInstruction ? { directorInstruction: turn.directorInstruction } : {}),
     createdAt: turn.createdAt,
     ...(turn.error ? { error: turn.error } : {}),
     candidates: (candidateByTurn.get(turn.id) ?? []).map((candidate) => ({ id: candidate.id, active: candidate.active, createdAt: candidate.createdAt }))
@@ -182,10 +260,11 @@ async function persistPlayerInput(input: PlayerTurnInput) {
   const branch = (await db.select().from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
   if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const base = parseStory(branch.currentSnapshotJson);
-  const recordId = nanoid();
-  const inputStory = appendPlayerRecord(base, input, recordId);
   const sequence = await nextSequence(input.branchId);
   const turnId = nanoid();
+  const speechSegments = input.kind === "comment" ? [] : input.speechSegments;
+  const recordIds = Array.from({ length: input.kind === "comment" ? 1 : speechSegments.length }, () => nanoid());
+  const inputStory = appendPlayerRecords(base, input, recordIds, turnId);
   const now = stamp();
   db.transaction((tx) => {
     tx.insert(turns).values({
@@ -196,8 +275,11 @@ async function persistPlayerInput(input: PlayerTurnInput) {
       inputKind: input.kind,
       inputTargetId: input.kind === "comment" ? input.postId : input.threadId,
       inputParentId: input.kind === "comment" ? input.parentCommentId ?? null : input.replyToMessageId ?? null,
-      inputText: input.text,
-      inputRecordId: recordId,
+      inputText: input.kind === "comment" ? input.text : speechSegments.join("\n\n"),
+      inputRecordId: recordIds[0] ?? `director-${turnId}`,
+      inputSegmentsJson: JSON.stringify(speechSegments),
+      inputRecordIdsJson: JSON.stringify(recordIds),
+      directorInstruction: input.kind === "comment" ? null : input.directorInstruction ?? null,
       baseSnapshotJson: JSON.stringify(base),
       error: null,
       createdAt: now,
@@ -217,8 +299,9 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
   if (latestSequence !== turn.sequence) throw conflict("只能在最新回合重试或重新生成；编辑旧回合请创建分支", "TURN_NOT_LATEST");
   const input = inputFromTurn(turn);
   const inputStory = regeneration
-    ? appendPlayerRecord(parseStory(turn.baseSnapshotJson), input, turn.inputRecordId)
+    ? appendPlayerRecords(parseStory(turn.baseSnapshotJson), input, recordIdsFromTurn(turn), turn.id)
     : parseStory(branch.currentSnapshotJson);
+  await applyAccountProfileOverlays(inputStory, branch.sessionId);
   if (regeneration) {
     const pending = await db.select().from(localActions).where(and(eq(localActions.branchId, branch.id), isNull(localActions.consumedAt))).orderBy(asc(localActions.createdAt));
     for (const action of pending) applyLocalActionState(inputStory, LocalActionSchema.parse(JSON.parse(action.valueJson)));
@@ -229,10 +312,14 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
       : undefined;
     const baseSummary = previousCheckpoint?.summaryText ?? branch.rollingSummary;
     const context = await assembleContext(turn.branchId, input, inputStory, baseSummary);
-    const output = await applyOutputRegex(await generateAiTurn(context.messages, context.settings, {
-      turnId: turn.id,
-      branchId: branch.id
-    }));
+    const output = stampGeneratedMessages(
+      await applyOutputRegex(await generateAiTurn(context.messages, context.settings, {
+        turnId: turn.id,
+        branchId: branch.id
+      })),
+      turn.id,
+      input.kind === "comment" ? 0 : input.speechSegments.length
+    );
     validateRuleConstraints(inputStory, output, context.rule);
     const nextStory = applyAiOutput(inputStory, output);
     const candidateId = nanoid();
@@ -408,6 +495,24 @@ export async function updateAvatar(branchId: string, accountId: string, avatarTe
   return getAppSnapshot(branchId);
 }
 
+export async function updateAccountProfile(branchId: string, accountId: string, displayName: string, verified: boolean) {
+  const branch = (await db.select().from(branches).where(eq(branches.id, branchId)).limit(1))[0];
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
+  if (!MANUALLY_EDITABLE_ACCOUNT_IDS.has(accountId)) throw conflict("该账号不允许在资料编辑器中修改", "ACCOUNT_PROFILE_LOCKED");
+  const story = parseStory(branch.currentSnapshotJson);
+  if (!story.accounts.some((account) => account.id === accountId)) throw notFound("账号不存在", "ACCOUNT_NOT_FOUND");
+  const displayNameKey = `account_display_name:${branch.sessionId}:${accountId}`;
+  const verifiedKey = `account_verified:${branch.sessionId}:${accountId}`;
+  const now = stamp();
+  db.transaction((tx) => {
+    tx.insert(settings).values({ key: displayNameKey, value: displayName, updatedAt: now })
+      .onConflictDoUpdate({ target: settings.key, set: { value: displayName, updatedAt: now } }).run();
+    tx.insert(settings).values({ key: verifiedKey, value: String(verified), updatedAt: now })
+      .onConflictDoUpdate({ target: settings.key, set: { value: String(verified), updatedAt: now } }).run();
+  });
+  return getAppSnapshot(branchId);
+}
+
 export async function updateProfileBanner(branchId: string, bannerTone: "" | StorySnapshot["profile"]["bannerTone"], bannerUrl: string) {
   const branch = (await db.select().from(branches).where(eq(branches.id, branchId)).limit(1))[0];
   if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
@@ -454,6 +559,8 @@ export async function forkFromTurn(turnId: string, text: string) {
     tx.insert(settings).values({ key: "active_session_id", value: parent.sessionId, updatedAt: now }).onConflictDoUpdate({ target: settings.key, set: { value: parent.sessionId, updatedAt: now } }).run();
   });
   const originalInput = inputFromTurn(original);
-  const input = { ...originalInput, branchId, text } as PlayerTurnInput;
+  const input: PlayerTurnInput = originalInput.kind === "comment"
+    ? { ...originalInput, branchId, text }
+    : { ...originalInput, branchId, speechSegments: [text] };
   return submitTurn(input);
 }

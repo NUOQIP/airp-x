@@ -39,6 +39,7 @@ export const apiClient = {
   selectCandidate: (id: string) => api<AppSnapshot>(`/api/candidates/${id}/select`, { method: "POST", body: "{}" }),
   localAction: (input: LocalAction) => api<AppSnapshot>("/api/actions", { method: "POST", body: JSON.stringify(input) }),
   updateAvatar: (branchId: string, accountId: string, avatarText: string, avatarUrl: string) => api<AppSnapshot>(`/api/accounts/${encodeURIComponent(accountId)}/avatar`, { method: "PUT", body: JSON.stringify({ branchId, avatarText, avatarUrl }) }),
+  updateAccountProfile: (branchId: string, accountId: string, displayName: string, verified: boolean) => api<AppSnapshot>(`/api/accounts/${encodeURIComponent(accountId)}/profile`, { method: "PUT", body: JSON.stringify({ branchId, displayName, verified }) }),
   updateProfileBanner: (branchId: string, bannerTone: "" | AppSnapshot["profile"]["bannerTone"], bannerUrl: string) => api<AppSnapshot>("/api/profile/banner", { method: "PUT", body: JSON.stringify({ branchId, bannerTone, bannerUrl }) }),
   createSession: (name: string) => api<AppSnapshot>("/api/sessions", { method: "POST", body: JSON.stringify({ name }) }),
   activateSession: (id: string) => api<AppSnapshot>(`/api/sessions/${id}/activate`, { method: "POST", body: "{}" }),

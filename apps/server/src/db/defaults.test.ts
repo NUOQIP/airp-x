@@ -47,7 +47,6 @@ describe("blank story homepage", () => {
         bannerTone: "sky",
         location: "成都",
         joinedAt: "2026年加入",
-        followingCount: 12,
         followerCount: 3_400,
         postCount: 56,
         currentStoryTime: "2026-08-08T20:00+08:00",
@@ -67,5 +66,8 @@ describe("blank story homepage", () => {
 
     expect(draft.profile.followerCount).toBe(3_400);
     expect(draft.account.handle).toBe("test_profile");
+    expect(draft.profile.sections[0]?.page).toBe("sidebar");
+    expect(draft.profile.sections[0]?.items[0]?.permission).toBe("temporary");
+    expect(draft.fanGoals).toEqual([]);
   });
 });

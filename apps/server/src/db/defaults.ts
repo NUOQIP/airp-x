@@ -98,7 +98,6 @@ export function createBlankStorySnapshot(): StorySnapshot {
       bannerTone: "sky",
       location: "",
       joinedAt: "",
-      followingCount: 0,
       followerCount: 0,
       postCount: 0,
       currentStoryTime: blankTime,
@@ -120,10 +119,19 @@ export function createBlankStorySnapshot(): StorySnapshot {
     mvu: {
       revision: 0,
       storyTime: blankTime,
-      heroine: { mood: "", location: "", activity: "", outfit: "", relationship: {} },
+      heroine: {
+        status: "", bio: "", usageNotice: {}, profileFacts: {}, mood: "", location: "", activity: "", outfit: "",
+        cycle: { anchorDate: blankTime, pregnancy: { status: "none" } },
+        statistics: { inseminationEvents: [] },
+        relationship: {}
+      },
       player: { relationship: {} },
-      platform: { activeTrends: [], flags: {} },
-      extensions: { homepageConfigured: false, homepageSource: "", identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } }
+      platform: { activeTrends: [], appliedImpactIds: [], impactLedger: [], fanGoals: [], flags: {} },
+      extensions: { homepageConfigured: false, homepageSource: "", identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } },
+      derived: {
+        cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: blankTime },
+        statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: blankTime }
+      }
     },
     trends: [],
     notices: []
@@ -178,7 +186,6 @@ export function createInitialStorySnapshot(): StorySnapshot {
       bannerTone: "rose",
       location: "成都",
       joinedAt: "2025年3月加入",
-      followingCount: 890,
       followerCount: 113_000,
       postCount: 2,
       currentStoryTime: seedTime,
@@ -188,33 +195,42 @@ export function createInitialStorySnapshot(): StorySnapshot {
           id: "section-live-status",
           title: "当前状态",
           kind: "status",
+          page: "sidebar",
           order: 10,
-          mutablePolicy: "ai_mutable",
+          origin: "initial",
           items: [
-            { id: "status-location", label: "位置", value: "成都 · IFS", emphasis: "accent" },
-            { id: "status-activity", label: "正在做", value: "进行一场公开直播", emphasis: "normal" },
-            { id: "status-mood", label: "心情", value: "兴奋又期待", emphasis: "success" }
+            { id: "current-status", label: "当前状态", value: "公开直播中", emphasis: "accent", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.status" } },
+            { id: "status-location", label: "位置", value: "成都 · IFS", emphasis: "accent", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.location" } },
+            { id: "current-activity", label: "当前活动", value: "进行一场公开直播", emphasis: "normal", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.activity" } },
+            { id: "current-outfit", label: "当前穿搭", value: "直播造型", emphasis: "normal", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.outfit" } },
+            { id: "current-mood", label: "当前心情", value: "兴奋又期待", emphasis: "success", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.mood" } },
+            { id: "cycle-phase", label: "当前周期", value: "排卵期", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "cycle.phase" } },
+            { id: "cycle-next-change", label: "下次阶段变化", value: "", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "cycle.nextChangeAt" } }
           ]
         },
         {
           id: "section-goal",
           title: "粉丝目标",
           kind: "progress",
+          page: "sidebar",
           order: 20,
-          mutablePolicy: "computed",
+          origin: "initial",
           items: [
-            { id: "goal-followers", label: "进度", value: "113K / 150K（75%）", emphasis: "accent" }
+            { id: "goal", label: "粉丝目标", value: "150000", emphasis: "accent", permission: "computed", origin: "initial", source: { kind: "derived", path: "fanPlan.targetFollowers" } },
+            { id: "current-progress", label: "当前进度数值", value: "113000", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "fanPlan.currentFollowers" } },
+            { id: "progress-percent", label: "当前进度百分比", value: "75.33%", emphasis: "accent", permission: "computed", origin: "initial", source: { kind: "derived", path: "fanPlan.progressPercent" } }
           ]
         },
         {
           id: "section-milestones",
           title: "里程碑",
           kind: "timeline",
+          page: "records",
           order: 30,
-          mutablePolicy: "ai_mutable",
+          origin: "initial",
           items: [
-            { id: "milestone-start", value: "2025.03.18 · 账号开始记录", emphasis: "normal" },
-            { id: "milestone-100k", value: "2026.10.01 · 达成 100K 粉丝", emphasis: "success" }
+            { id: "milestone-start", value: "2025.03.18 · 账号开始记录", emphasis: "normal", permission: "locked", origin: "initial", source: { kind: "literal", path: "profile.sections.section-milestones.items.milestone-start.value" } },
+            { id: "milestone-100k", value: "2026.10.01 · 达成 100K 粉丝", emphasis: "success", permission: "locked", origin: "initial", source: { kind: "literal", path: "profile.sections.section-milestones.items.milestone-100k.value" } }
           ]
         }
       ]
@@ -235,7 +251,7 @@ export function createInitialStorySnapshot(): StorySnapshot {
           tone: "warm"
         }],
         metrics: { replies: 386, reposts: 1_204, likes: 9_830, views: 286_000, bookmarks: 719 },
-        pinned: true,
+        pinned: false,
         visibility: "public",
         moderation: "visible"
       },
@@ -333,15 +349,29 @@ export function createInitialStorySnapshot(): StorySnapshot {
     mvu: {
       revision: 0,
       storyTime: seedTime,
-      heroine: { mood: "兴奋又期待", location: "成都 · IFS", activity: "公开直播中", outfit: "直播造型", relationship: { player: "信任" } },
+      heroine: {
+        status: "公开直播中", bio: "Cosplay · 日常 · 直播记录", usageNotice: {}, profileFacts: {},
+        mood: "兴奋又期待", location: "成都 · IFS", activity: "公开直播中", outfit: "直播造型",
+        cycle: { anchorDate: "2026-10-22T15:07+08:00", pregnancy: { status: "none" } },
+        statistics: { inseminationEvents: [] }, relationship: { player: "信任" }
+      },
       player: { relationship: { heroine: "亲密" } },
-      platform: { activeTrends: ["#城市现场", "#实时直播"], flags: { liveInProgress: true } },
-      extensions: { identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } }
+      platform: {
+        activeTrends: ["#城市现场", "#实时直播"], appliedImpactIds: [], impactLedger: [],
+        fanGoals: [{ id: "fan-goal-150k", targetFollowers: 150_000, reward: "", createdAt: seedTime }],
+        flags: { liveInProgress: true }
+      },
+      extensions: { identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } },
+      derived: {
+        cycle: { phase: "ovulation", cycleDay: 4, nextChangeAt: "2026-10-26T15:07+08:00" },
+        statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: "2026-10-26T00:00+08:00" },
+        fanPlan: { activeGoalId: "fan-goal-150k", targetFollowers: 150_000, currentFollowers: 113_000, progressPercent: 75.33, reward: "", completed: false }
+      }
     },
     trends: [
-      { label: "城市现场", volumeLabel: "12.8K 帖文", rank: 1 },
-      { label: "周末直播", volumeLabel: "8,962 帖文", rank: 2 },
-      { label: "Cosplay", volumeLabel: "36.5K 帖文", rank: 3 }
+      { id: "trend-city-live", label: "城市现场", volumeLabel: "12.8K 帖文", rank: 2, heatScore: 12_800, updatedAt: seedTime },
+      { id: "trend-weekend-live", label: "周末直播", volumeLabel: "8,962 帖文", rank: 3, heatScore: 8_962, updatedAt: seedTime },
+      { id: "trend-cosplay", label: "Cosplay", volumeLabel: "36.5K 帖文", rank: 1, heatScore: 36_500, updatedAt: seedTime }
     ],
     notices: []
   };

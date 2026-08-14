@@ -20,7 +20,7 @@ import { testStrictSchemaCapability } from "./services/ai-client.js";
 import { createBackup, restoreBackup } from "./services/backup-service.js";
 import { getConfigSnapshot, getPromptPresetState, getRuntimeSettings, savePromptPresetState, saveRuntimeSettings } from "./services/config-service.js";
 import { applyHomepageDraft, previewHomepage } from "./services/homepage-service.js";
-import { assertRuleConfig } from "./services/rule-config.js";
+import { assertRuleConfig, normalizeRuleConfig } from "./services/rule-config.js";
 import { compileSafeRegex } from "./services/regex-safety.js";
 import { badRequest, conflict, notFound } from "./services/http-error.js";
 import { inspectImageDataUrl } from "./services/image-data-url.js";
@@ -35,6 +35,7 @@ import {
   retryTurn,
   selectCandidate,
   submitTurn,
+  updateAccountProfile,
   updateAvatar,
   updateProfileBanner
 } from "./services/turn-service.js";
@@ -48,7 +49,7 @@ const cardBody = z.object({
   activate: z.boolean().default(true)
 }).strict();
 const bookBody = z.object({ name: z.string().min(1).max(160), scope: z.enum(["global", "player", "heroine", "session"]), enabled: z.boolean(), tokenBudgetPercent: z.number().int().min(1).max(100) }).strict();
-const ruleBody = z.object({ rawText: z.string().min(1).max(500_000), minProfileChanges: z.number().int().min(0).max(100), minPanels: z.number().int().min(1).max(8), maxPanels: z.number().int().min(1).max(8), representativeComments: z.number().int().min(0).max(100) }).strict();
+const ruleBody = z.object({ rawText: z.string().min(1).max(500_000), minProfileChanges: z.number().int().min(0).max(100), minPanels: z.number().int().min(0).max(8), maxPanels: z.number().int().min(1).max(8), representativeComments: z.number().int().min(0).max(100) }).strict();
 const protectedMacroNames = new Set(["player", "char", "story_time", "input", "mvu_revision", "mvu"]);
 const imageDataUrlSchema = (label: string) => z.string().max(750_000).superRefine((value, context) => {
   try { inspectImageDataUrl(value); }
@@ -94,6 +95,15 @@ export async function registerRoutes(app: FastifyInstance) {
       ])
     }).strict().parse(request.body);
     return updateAvatar(body.branchId, id, body.avatarText, body.avatarUrl);
+  });
+  app.put("/api/accounts/:id/profile", async (request) => {
+    const { id } = idParams.parse(request.params);
+    const body = z.object({
+      branchId: z.string().min(1),
+      displayName: z.string().trim().min(1).max(80),
+      verified: z.boolean()
+    }).strict().parse(request.body);
+    return updateAccountProfile(body.branchId, id, body.displayName, body.verified);
   });
   app.put("/api/profile/banner", async (request) => {
     const body = z.object({
@@ -228,10 +238,11 @@ export async function registerRoutes(app: FastifyInstance) {
     const body = ruleBody.parse(request.body);
     const { id } = idParams.parse(request.params);
     if (!(await db.select({ id: rulePresets.id }).from(rulePresets).where(eq(rulePresets.id, id)).limit(1))[0]) throw notFound("规则预设不存在", "RULE_PRESET_NOT_FOUND");
-    const parsedRule = assertRuleConfig(body.rawText);
+    const normalizedRule = normalizeRuleConfig(body.rawText);
+    const parsedRule = assertRuleConfig(normalizedRule.rawText);
     await db.update(rulePresets).set({
-      rawText: body.rawText,
-      minProfileChanges: parsedRule.hard_constraints.profile.min_real_changes,
+      rawText: normalizedRule.rawText,
+      minProfileChanges: 0,
       minPanels: parsedRule.hard_constraints.render_plan.min_panels,
       maxPanels: parsedRule.hard_constraints.render_plan.max_panels,
       representativeComments: parsedRule.hard_constraints.posts.representative_comments,

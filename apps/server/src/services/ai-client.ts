@@ -24,6 +24,26 @@ const homepageJsonSchema = zodToJsonSchema(HomepageDraftSchema, {
   $refStrategy: "root"
 });
 
+const stateWriteContractV2: PromptMessage = {
+  role: "system",
+  content: [
+    "# AIRP state write contract v2 (hard constraint)",
+    "Permissions are exactly locked, temporary, computed, append_only.",
+    "Never write locked fields or computed/derived display values. Update a temporary item only through its declared canonical source. Use dedicated append events for append_only history.",
+    "A new AI profile section must be origin=ai, page=records, and may initially contain only temporary items; allow at most 8 AI sections and 12 items per section. To create AI timeline history, first create an empty kind=timeline section with profile.patch, then add each append_only item with profile.item.append. Never place append_only items directly inside the new section patch.",
+    "profile.item.add may add an origin=ai temporary item to the fixed initial sidebar/status live card or to an AI-origin section. Its source must be extensions.profileTemporary.<sectionId>.<itemId>. Initial items cannot be removed; an AI-origin temporary item may later be removed with profile.item.remove. append_only items can never be removed.",
+    "Every turn must set heroine.status, heroine.outfit, and heroine.mood to truthful values for the new story moment that differ from their previous values. Other temporary sources may remain unchanged when the story does not change them.",
+    "When heroine.location changes, use a real-world place name consistent with the story; do not fabricate a supposedly verifiable venue. The program cannot independently map-verify it.",
+    "Do not write mvu.derived, revision, computed counters, profile follower/post counts, interaction metrics, trend rank, trend heatScore, or volumeLabel.",
+    "Existing posts and comments are immutable: post.upsert and comment.upsert create new ids only. Use post.remove/comment.moderate for supported later state changes.",
+    "platform.impact carries qualitative kind/scale only. platform.trend.upsert/remove carries stable identity and qualitative heat only; the program computes all numbers and ranking.",
+    "Use statistics.insemination.append for new count/volumeMl records, profile.item.append for milestone/history records, and fan.goal.upsert for fan goals. Only unfinished current/future goals may be updated; completed goals are immutable.",
+    "The biological cycle is 7 story-days: menstruation 1, follicular 2, ovulation 1, luteal 3. AI controls storyTime. Pregnancy has one legal transition chain: none -> suspected -> confirmed -> ended -> none. A turn may keep the current state, but never skip, reverse, or transition directly from none to confirmed. Only on suspected -> confirmed, choose durationDays, conceptionAt, and confirmedAt once; never rewrite them afterward. Only on confirmed -> ended, set a new heroine.cycle.anchorDate in that same turn; only a later ended -> none transition returns to the ordinary cycle.",
+    "For DM/group turns, speechSegments are character-visible messages. directorInstruction is a hidden Master directive for this turn only; never quote it, turn it into a message, or treat it as character knowledge. A director-only turn contains no player speech.",
+    "Use one message.add per natural chat bubble and preserve conversational order. renderPlan may have zero panels and must include only components that actually changed; a profile panel is never mandatory."
+  ].join("\n")
+};
+
 export class AiConfigurationError extends Error {
   readonly code = "AI_CONFIGURATION_INVALID";
 
@@ -256,7 +276,7 @@ export async function generateAiTurn(messages: PromptMessage[], settings: Runtim
   const requestBody = {
     model: settings.model,
     ...providerRequestOptions(settings),
-    messages: messagesWithJsonContract(messages, settings, "airp_turn_output", outputJsonSchema),
+    messages: messagesWithJsonContract([stateWriteContractV2, ...messages], settings, "airp_turn_output", outputJsonSchema),
     temperature: settings.temperature,
     max_tokens: settings.maxOutputTokens,
     top_p: settings.topP,
@@ -310,13 +330,25 @@ export async function generateHomepageDraft(sourceText: string, settings: Runtim
         "You are a homepage structuring engine for a fictional X-style roleplay application.",
         "Transform the user's natural-language homepage into the supplied fixed JSON schema.",
         "Preserve every supplied fact and the original wording as closely as the schema permits.",
-        "Use headings and grouped paragraphs to create stable profile sections and section items.",
+        "Use headings and grouped paragraphs to create stable profile sections and section items, but do not duplicate a dynamic value outside its canonical source.",
         "Give every section and item a unique, readable ASCII id.",
-        "Assign every profile section to page live, about, or records. Current status and goals belong to live; facts and notices to about; statistics and timelines to records.",
+        "The only section placements are sidebar, bio, and records. There is no live/about profile tab.",
+        "Place the current live-status card and fan-plan card in sidebar. account.bio contains only the main bio. Create the usage notice as a separate page=bio notice section whose temporary items use mvu sources heroine.usageNotice.<itemId>; the UI visually merges it with the bio without merging the data. Put the registry, statistics, milestones, and any other durable cards in records.",
+        "Set every initial section and item origin to initial.",
+        "Permissions are exactly locked, temporary, computed, append_only. IDs, handle, private state, display name, avatar, verification, banner, joined date, section titles/structure, and durable literal facts are locked against AI writes.",
+        "Map current status, activity, outfit, mood, and location to temporary items with mvu sources heroine.status, heroine.activity, heroine.outfit, heroine.mood, heroine.location respectively.",
+        "For the records registry, height is locked/literal. Breed, weight, measurements, body-depth facts, and other user-supplied mutable registry facts are temporary with mvu paths heroine.profileFacts.<itemId>.",
+        "Map cycle fields to exact derived source paths such as cycle.phase and cycle.nextChangeAt. Map statistics to statistics.todayCount, statistics.totalCount, statistics.totalVolumeMl, statistics.lastRecord, and statistics.nextDailyResetAt. Map fan-plan display to fanPlan target/progress/reward/completed paths. Use kind=platform with profile.followerCount/profile.postCount for platform totals.",
+        "Existing milestone entries are locked literal history. The milestone section is initial records structure; later milestones are appended with profile.item.append and event_log sources.",
+        "This builder creates origin=initial homepage structure, not runtime AI extension cards. The runtime rule for an AI-created timeline is: create an empty records/timeline card first, then use profile.item.append; do not prefill a newly created AI timeline with append_only items.",
+        "Temporary fields not covered by a standard source must use mvu.extensions.profileTemporary.<sectionId>.<itemId>. Never invent a computed formula or source.",
         "Convert abbreviated account counts such as K/M to non-negative integers.",
+        "Do not output followingCount; the application no longer displays or stores it in homepage drafts.",
         "Always set profile.postCount to 0. The application derives it from stored posts and this builder creates no posts.",
+        "Create fanGoals from explicit target/reward plans. targetFollowers must be an absolute positive integer, createdAt must use the initial story time, and ids must be stable ASCII. Do not invent a goal when none is supplied.",
+        "Initialize insemination statistics at 0 count and 0 mL regardless of aggregate historical numbers in the prose; the program will accumulate new records from append events.",
         "Convert an explicit current date and time to ISO 8601 with an offset; if no offset is supplied, use +08:00.",
-        "Derive heroineState only from current-status facts that are explicitly present.",
+        "Derive heroineState status, activity, outfit, mood, and location only from current-status facts explicitly present. Set heroineState.pregnancy to {status:'none'} unless the input explicitly establishes suspected/confirmed/ended pregnancy; confirmed requires confirmedAt, conceptionAt, and one AI-chosen positive integer durationDays. The application anchors its 7-day cycle to this story time as ovulation.",
         "Do not create posts, comments, messages, live events, or new story facts.",
         "Put ambiguities or missing important fields in notes. Return only the JSON schema instance."
       ].join("\n")
