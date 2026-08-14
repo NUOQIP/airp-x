@@ -6,9 +6,9 @@ import { getPromptPresetState, getRuntimeSettings } from "./config-service.js";
 import { stringifyContextValue } from "./context-sanitizer.js";
 import { buildAiRulePrompt, parseRuleConfig } from "./rule-config.js";
 import { buildWorldbookScanText, selectWorldbookBudget, worldbookScopeEnabled } from "./context-policy.js";
-import { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+import { buildMvuContextState, buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
-export { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+export { buildMvuContextState, buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
 export interface PromptMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ContextBreakdown { label: string; estimatedTokens: number; mandatory: boolean }
@@ -118,9 +118,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   if (markerEnabled("rules")) mandatory.push({ label: "规则预设", message: { role: "system", content: `# 全局玩法规则\n${buildAiRulePrompt(rule.rawText)}` } });
   if (markerEnabled("player_card")) mandatory.push({ label: "玩家角色卡", message: { role: "system", content: `# 玩家角色卡（只读）\n${renderMacros(playerCard.rawText, playerMacros)}` } });
   if (markerEnabled("heroine_card")) mandatory.push({ label: "女主角色卡", message: { role: "system", content: `# 女主角色卡（只读）\n${renderMacros(heroineCard.rawText, heroineMacros)}` } });
-  const contextMvu = structuredClone(snapshot.mvu);
-  delete contextMvu.extensions.homepageSource;
-  delete (contextMvu.platform as Partial<typeof contextMvu.platform>).activeTrends;
+  const contextMvu = buildMvuContextState(snapshot);
   if (markerEnabled("mvu_state")) mandatory.push({ label: "MVU 状态", message: { role: "system", content: `# 当前 MVU 状态\n${stringifyContextValue(contextMvu)}` } });
   if (markerEnabled("profile_state")) mandatory.push({ label: "主页状态与权限注册表", message: { role: "system", content: `# 当前主页结构、唯一数据源与权限注册表\n${stringifyContextValue(buildProfileContextState(snapshot))}` } });
   if (pendingActionRows.length > 0) {

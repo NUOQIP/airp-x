@@ -167,8 +167,7 @@ function migrateStatisticsSection(snapshot: StorySnapshot) {
     ["today-creampie-count", "今日次数", "statistics.todayCount"],
     ["total-creampie-count", "累计次数", "statistics.totalCount"],
     ["total-semen-volume", "累计总量", "statistics.totalVolumeMl"],
-    ["recent-breeding", "最近记录", "statistics.lastRecord"],
-    ["daily-reset", "今日数据重置时间", "statistics.nextDailyResetAt"]
+    ["recent-breeding", "最近记录", "statistics.lastRecord"]
   ];
   section.items = definitions.map(([id, label, path]) => {
     const existing = section.items.find((candidate) => candidate.id === id);

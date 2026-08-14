@@ -72,6 +72,7 @@ describe("homepage state v2", () => {
     expect("followingCount" in migrated.profile).toBe(false);
     expect(migrated.mvu.derived.cycle).toMatchObject({ phase: "ovulation", cycleDay: 4 });
     expect(migrated.mvu.derived.statistics).toMatchObject({ todayCount: 0, totalCount: 0, totalVolumeMl: 0 });
+    expect(migrated.mvu.derived.statistics.nextDailyResetAt).toBeTruthy();
     expect(migrated.mvu.heroine.usageNotice["rule-a"]).toBe("保留内容");
     const registration = migrated.profile.sections.find((section) => section.id === "breeding-registration")!;
     expect(registration.page).toBe("records");
@@ -81,6 +82,8 @@ describe("homepage state v2", () => {
     const live = migrated.profile.sections.find((section) => section.id === "live-status")!;
     expect(live.items.find((item) => item.id === "current-status")?.source.path).toBe("heroine.status");
     expect(live.items.find((item) => item.id === "cycle-phase")).toMatchObject({ permission: "computed", source: { path: "cycle.phase" } });
+    const statistics = migrated.profile.sections.find((section) => section.id === "breeding-records")!;
+    expect(statistics.items.some((item) => item.id === "daily-reset" || item.source.path === "statistics.nextDailyResetAt")).toBe(false);
   });
 
   it("derives append-only statistics in mL and resets only the daily subtotal", () => {

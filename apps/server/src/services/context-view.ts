@@ -8,6 +8,14 @@ export function hiddenDirectorInstruction(input: PlayerTurnInput) {
   return input.kind === "comment" ? undefined : input.directorInstruction?.trim() || undefined;
 }
 
+export function buildMvuContextState(snapshot: StorySnapshot) {
+  const contextMvu = structuredClone(snapshot.mvu);
+  delete contextMvu.extensions.homepageSource;
+  delete (contextMvu.platform as Partial<typeof contextMvu.platform>).activeTrends;
+  delete (contextMvu.derived.statistics as Partial<typeof contextMvu.derived.statistics>).nextDailyResetAt;
+  return contextMvu;
+}
+
 export interface RecentPlatformContextOptions {
   currentTurnId?: string;
   currentRecordIds?: ReadonlySet<string>;
@@ -73,7 +81,7 @@ export function buildProfileContextState(snapshot: StorySnapshot) {
     page: section.page,
     order: section.order,
     origin: section.origin,
-    items: section.items.map((item) => ({
+    items: section.items.filter((item) => item.id !== "daily-reset" && item.source.path !== "statistics.nextDailyResetAt").map((item) => ({
       id: item.id,
       label: item.label,
       emphasis: item.emphasis,

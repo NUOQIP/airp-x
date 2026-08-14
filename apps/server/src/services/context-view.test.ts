@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PlayerTurnInput, StorySnapshot } from "@airp/shared";
-import { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+import { createInitialStorySnapshot } from "../db/defaults.js";
+import { buildMvuContextState, buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
 describe("context view", () => {
   it("keeps the hidden director instruction out of character-visible text", () => {
@@ -44,6 +45,7 @@ describe("context view", () => {
           items: [
             { id: "dynamic", value: "duplicate cache", emphasis: "normal", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.status" } },
             { id: "computed", value: "duplicate computed", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "cycle.phase" } },
+            { id: "daily-reset", value: "internal time", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "statistics.nextDailyResetAt" } },
             { id: "literal", value: "fixed fact", emphasis: "normal", permission: "locked", origin: "initial", source: { kind: "literal", path: "profile.sections.section.items.literal.value" } },
             { id: "history", value: "old event", emphasis: "normal", permission: "append_only", origin: "initial", source: { kind: "event_log", path: "profile.sections.section.items" } }
           ]
@@ -55,6 +57,7 @@ describe("context view", () => {
     const items = context.structure.sections[0]!.items;
     expect(items.find((item) => item.id === "dynamic")).not.toHaveProperty("value");
     expect(items.find((item) => item.id === "computed")).not.toHaveProperty("value");
+    expect(items.find((item) => item.id === "daily-reset")).toBeUndefined();
     expect(items.find((item) => item.id === "literal")).toHaveProperty("value", "fixed fact");
     expect(items.find((item) => item.id === "history")).toHaveProperty("value", "old event");
     expect(context.account).not.toHaveProperty("avatarUrl");
@@ -62,6 +65,15 @@ describe("context view", () => {
     expect(context.structure).not.toHaveProperty("bannerUrl");
     expect(context.structure).not.toHaveProperty("location");
     expect(context.structure).not.toHaveProperty("currentStoryTime");
+  });
+
+  it("keeps the daily reset timestamp in program state but out of AI-visible MVU", () => {
+    const snapshot = createInitialStorySnapshot();
+    const resetAt = snapshot.mvu.derived.statistics.nextDailyResetAt;
+    const context = buildMvuContextState(snapshot);
+    expect(resetAt).toBeTruthy();
+    expect(context.derived.statistics).not.toHaveProperty("nextDailyResetAt");
+    expect(snapshot.mvu.derived.statistics.nextDailyResetAt).toBe(resetAt);
   });
 
   it("excludes the current input and marks older failed inputs as unanswered", () => {

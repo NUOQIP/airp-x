@@ -170,7 +170,10 @@ export function HomePage() {
     if (usageSectionIds.has(section.id) || section.kind === "status" || section.kind === "progress") return false;
     const page = section.page as string | undefined;
     return page === "records" || page === "about" || (!page && section.kind !== "notice");
-  }).map((section) => section.kind === "facts" ? {
+  }).map((section) => ({
+    ...section,
+    items: section.items.filter((item) => item.id !== "daily-reset" && item.source?.path !== "statistics.nextDailyResetAt")
+  })).map((section) => section.kind === "facts" ? {
     ...section,
     items: section.items.filter((item) => !/排卵|周期/.test(item.label ?? "") && !/(?:^|\.)cycle(?:\.|$)/.test(item.source?.path ?? ""))
   } : section).filter((section) => section.items.length > 0);
