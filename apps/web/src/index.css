@@ -51,12 +51,6 @@ button { cursor: pointer; }
   100% { background-position: -200% 0; }
 }
 
-@keyframes component-refresh {
-  0% { outline-color: rgb(29 155 240 / .85); outline-offset: 0; }
-  45% { outline-color: rgb(29 155 240 / .35); outline-offset: 3px; }
-  100% { outline-color: transparent; outline-offset: 5px; }
-}
-
 @keyframes dm-bubble-reveal {
   from { opacity: 0; transform: translateY(7px) scale(.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -64,7 +58,6 @@ button { cursor: pointer; }
 
 .reveal-item { animation: rise-in .38s cubic-bezier(.2,.8,.2,1) both; }
 .metric-pop { animation: metric-pop .45s ease-out; }
-.component-refresh { outline: 2px solid transparent; animation: component-refresh 1.15s ease-out both; }
 .dm-bubble-reveal { animation: dm-bubble-reveal .28s cubic-bezier(.2,.8,.2,1) both; }
 .skeleton { background: linear-gradient(90deg,#eff3f4 20%,#f7f9f9 50%,#eff3f4 80%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
 .plain-content { white-space: pre-wrap; overflow-wrap: anywhere; }
