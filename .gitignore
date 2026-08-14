@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+data/
+exports/
+*.log
+*.log.*
+.codex/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

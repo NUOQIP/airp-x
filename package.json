@@ -1,0 +1,28 @@
+{
+  "name": "airp-x-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "npm run start -w @airp/server",
+    "dev": "concurrently -k -n server,web -c blue,cyan \"npm run dev -w @airp/server\" \"npm run dev -w @airp/web\"",
+    "build": "npm run build -w @airp/shared && npm run build -w @airp/server && npm run build -w @airp/web",
+    "typecheck": "npm run build -w @airp/shared && npm run typecheck -w @airp/server && npm run typecheck -w @airp/web",
+    "test": "vitest run",
+    "db:generate": "npm run db:generate -w @airp/server",
+    "db:migrate": "npm run db:migrate -w @airp/server",
+    "db:seed": "npm run db:seed -w @airp/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

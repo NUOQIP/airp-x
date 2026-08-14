@@ -1,0 +1,32 @@
+{
+  "name": "@airp/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed-runner.ts"
+  },
+  "dependencies": {
+    "@airp/shared": "*",
+    "@fastify/cors": "^10.1.0",
+    "@fastify/static": "^10.1.3",
+    "dotenv": "^17.2.2",
+    "drizzle-orm": "rc",
+    "fastify": "^5.6.1",
+    "nanoid": "^5.1.5",
+    "yaml": "^2.9.0",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.24.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "drizzle-kit": "rc",
+    "tsx": "^4.20.5"
+  }
+}

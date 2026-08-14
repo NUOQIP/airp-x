@@ -1,0 +1,1 @@
+ALTER TABLE `turn_candidates` ADD `summary_text` text DEFAULT '' NOT NULL;
