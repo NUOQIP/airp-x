@@ -10,6 +10,19 @@ const cyclePhaseLabels = {
   pregnant: "妊娠中"
 } as const;
 
+const corruptionStages = [
+  { minimum: 1, maximum: 10, label: "试探期", description: "账号刚起步，对越界表达仍以试探、暗示和保留退路为主。" },
+  { minimum: 11, maximum: 20, label: "适应期", description: "开始适应关注与反馈，会主动重复带来正反馈的轻度越界行为。" },
+  { minimum: 21, maximum: 30, label: "主动营业期", description: "会主动设计贴文与互动吸引关注，但仍维持清晰的公开边界。" },
+  { minimum: 31, maximum: 40, label: "边界松动期", description: "对更大胆的公开表达逐渐习惯，现实生活与账号经营开始互相影响。" },
+  { minimum: 41, maximum: 50, label: "公开挑逗期", description: "享受被围观和讨论，会有意识地利用暧昧、争议与信息差经营账号。" },
+  { minimum: 51, maximum: 60, label: "欲望主导期", description: "账号反馈开始明显左右选择，个人欲望与平台目标优先级上升。" },
+  { minimum: 61, maximum: 70, label: "沉浸失控期", description: "线上身份深度侵入日常生活，越界行为更频繁且更难回到原有尺度。" },
+  { minimum: 71, maximum: 80, label: "身份反转期", description: "私密账号逐渐成为主要自我认同，原有身份更多用于维持表面关系。" },
+  { minimum: 81, maximum: 90, label: "深度堕落期", description: "会主动追求更强烈的关注与刺激，并把平台影响当作持续推进的动力。" },
+  { minimum: 91, maximum: 100, label: "彻底沉沦期", description: "账号人格与现实选择高度统一，几乎不再为曾经的边界保留退路。" }
+] as const;
+
 function timezoneOffsetMinutes(value: string) {
   const match = value.match(/([+-])(\d{2}):(\d{2})$/);
   if (!match) return 0;
@@ -130,6 +143,18 @@ function deriveFanPlan(snapshot: StorySnapshot): MvuState["derived"]["fanPlan"] 
   };
 }
 
+export function deriveCorruption(followerCount: number): MvuState["derived"]["corruption"] {
+  const score = clamp(Math.floor(Math.max(0, followerCount) / 1_000), 1, 100);
+  const stage = corruptionStages.find((candidate) => score >= candidate.minimum && score <= candidate.maximum) ?? corruptionStages.at(-1)!;
+  return {
+    score,
+    range: `${stage.minimum}-${stage.maximum}`,
+    label: stage.label,
+    description: stage.description,
+    ...(stage.maximum < 100 ? { nextStageAtFollowers: (stage.maximum + 1) * 1_000 } : {})
+  };
+}
+
 function getAtPath(root: unknown, path: string) {
   let current = root;
   for (const part of path.split(".")) {
@@ -154,13 +179,16 @@ function displayValue(path: string, value: unknown) {
 }
 
 export function synchronizeDerivedState(snapshot: StorySnapshot): StorySnapshot {
+  const privateAccountIds = new Set(snapshot.accounts.filter((account) => account.isPrivate).map((account) => account.id));
+  for (const post of snapshot.posts) if (privateAccountIds.has(post.authorId)) post.visibility = "followers";
   snapshot.trends.sort((a, b) => b.heatScore - a.heatScore || a.label.localeCompare(b.label));
   snapshot.trends = snapshot.trends.slice(0, 20).map((trend, index) => ({ ...trend, rank: index + 1, volumeLabel: trendVolumeLabel(trend.heatScore) }));
   const fanPlan = deriveFanPlan(snapshot);
   snapshot.mvu.derived = {
     cycle: deriveCycle(snapshot.mvu),
     statistics: deriveStatistics(snapshot.mvu),
-    ...(fanPlan ? { fanPlan } : {})
+    ...(fanPlan ? { fanPlan } : {}),
+    corruption: deriveCorruption(snapshot.profile.followerCount)
   };
   snapshot.profile.location = snapshot.mvu.heroine.location;
   snapshot.profile.currentStoryTime = snapshot.mvu.storyTime;

@@ -8,6 +8,52 @@ export function hiddenDirectorInstruction(input: PlayerTurnInput) {
   return input.kind === "comment" ? undefined : input.directorInstruction?.trim() || undefined;
 }
 
+export interface RecentPlatformContextOptions {
+  currentTurnId?: string;
+  currentRecordIds?: ReadonlySet<string>;
+  failedTurnIds?: ReadonlySet<string>;
+  failedRecordIds?: ReadonlySet<string>;
+}
+
+export function buildRecentPlatformContext(snapshot: StorySnapshot, options: RecentPlatformContextOptions = {}) {
+  const currentRecordIds = options.currentRecordIds ?? new Set<string>();
+  const failedTurnIds = options.failedTurnIds ?? new Set<string>();
+  const failedRecordIds = options.failedRecordIds ?? new Set<string>();
+  const recentComments = snapshot.comments
+    .filter((comment) => !currentRecordIds.has(comment.id))
+    .slice(-20)
+    .map((comment) => comment.authorId === "account-player" && failedRecordIds.has(comment.id)
+      ? { ...comment, responseState: "unanswered_failed_turn", contextNote: "未获回复：对应回合生成失败，仅作较早历史，不是最新问题。" }
+      : comment);
+  const recentMessages = snapshot.messages
+    .filter((message) => message.turnId !== options.currentTurnId)
+    .slice(-20)
+    .map((message) => message.isPlayerInput && message.turnId && failedTurnIds.has(message.turnId)
+      ? { ...message, responseState: "unanswered_failed_turn", contextNote: "未获回复：对应回合生成失败，仅作较早历史，不是最新问题。" }
+      : message);
+  return {
+    posts: snapshot.posts.slice(-10),
+    comments: recentComments,
+    messages: recentMessages,
+    localState: snapshot.notices.slice(-10)
+  };
+}
+
+export function buildRecentPlatformScanText(snapshot: StorySnapshot, options: RecentPlatformContextOptions = {}) {
+  const currentRecordIds = options.currentRecordIds ?? new Set<string>();
+  const failedTurnIds = options.failedTurnIds ?? new Set<string>();
+  const failedRecordIds = options.failedRecordIds ?? new Set<string>();
+  return {
+    posts: snapshot.posts.map((post) => post.text),
+    comments: snapshot.comments
+      .filter((comment) => !currentRecordIds.has(comment.id) && !(comment.authorId === "account-player" && failedRecordIds.has(comment.id)))
+      .map((comment) => comment.text),
+    messages: snapshot.messages
+      .filter((message) => message.turnId !== options.currentTurnId && !(message.isPlayerInput && message.turnId && failedTurnIds.has(message.turnId)))
+      .map((message) => message.text)
+  };
+}
+
 export function buildProfileContextState(snapshot: StorySnapshot) {
   const account = snapshot.accounts.find((candidate) => candidate.id === snapshot.profile.accountId);
   const accountContext = account ? {

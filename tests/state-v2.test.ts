@@ -3,6 +3,7 @@ import type { AiTurnOutput, DomainEvent, StorySnapshot } from "@airp/shared";
 import { createInitialStorySnapshot } from "../apps/server/src/db/defaults.js";
 import { migrateStorySnapshotV2 } from "../apps/server/src/services/snapshot-migration.js";
 import { applyAiOutput, validateRuleConstraints } from "../apps/server/src/services/story-engine.js";
+import { deriveCorruption } from "../apps/server/src/services/state-derived-service.js";
 
 function turn(base: StorySnapshot, options: { storyTime?: string; events?: DomainEvent[]; suffix?: string; panels?: AiTurnOutput["renderPlan"]["panels"] } = {}): AiTurnOutput {
   const suffix = options.suffix ?? "·更新";
@@ -20,6 +21,14 @@ function turn(base: StorySnapshot, options: { storyTime?: string; events?: Domai
 }
 
 describe("homepage state v2", () => {
+  it("derives a hidden 1-100 corruption stage from followers", () => {
+    expect(deriveCorruption(0)).toMatchObject({ score: 1, range: "1-10", label: "试探期", nextStageAtFollowers: 11_000 });
+    expect(deriveCorruption(5_002)).toMatchObject({ score: 5, range: "1-10", label: "试探期" });
+    expect(deriveCorruption(11_000)).toMatchObject({ score: 11, range: "11-20", label: "适应期", nextStageAtFollowers: 21_000 });
+    expect(deriveCorruption(100_000)).toMatchObject({ score: 100, range: "91-100", label: "彻底沉沦期" });
+    expect(deriveCorruption(100_000)).not.toHaveProperty("nextStageAtFollowers");
+  });
+
   it("migrates legacy sections precisely, removes followingCount and starts statistics at zero", () => {
     const legacy = structuredClone(createInitialStorySnapshot()) as unknown as Record<string, any>;
     legacy.profile.followingCount = 890;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AiTurnOutput } from "@airp/shared";
 import { createInitialStorySnapshot } from "../apps/server/src/db/defaults";
-import { applyAiOutput, validateRuleConstraints } from "../apps/server/src/services/story-engine";
+import { applyAiOutput, normalizeAiTimeline, validateRuleConstraints } from "../apps/server/src/services/story-engine";
 
 function validOutput(): AiTurnOutput {
   return {
@@ -92,6 +92,8 @@ describe("story engine", () => {
 
     const afterPosts = applyAiOutput(base, output);
     expect(afterPosts.profile.postCount).toBe(baseline + 1);
+    expect(afterPosts.posts.find((post) => post.id === newPrivatePost.id)?.visibility).toBe("followers");
+    expect(afterPosts.posts.find((post) => post.id === newCoverPost.id)?.visibility).toBe(newCoverPost.visibility);
 
     const removal = validOutput();
     removal.events = [
@@ -104,6 +106,32 @@ describe("story engine", () => {
     const overwrite = validOutput();
     overwrite.events = [{ type: "post.upsert", post: { ...existingPost, text: "编辑已有帖文" } }];
     expect(() => applyAiOutput(base, overwrite)).toThrow(/cannot be overwritten/);
+  });
+
+  it("spaces generated comments and messages and extends the final story time", () => {
+    const base = createInitialStorySnapshot();
+    const output = validOutput();
+    output.storyTime = base.mvu.storyTime;
+    const post = { ...structuredClone(base.posts[0]!), id: "post-timeline", createdAt: output.storyTime, pinned: false };
+    const comment = { ...structuredClone(base.comments[0]!), id: "comment-timeline-1", postId: post.id, createdAt: output.storyTime };
+    output.events = [
+      { type: "post.upsert", post },
+      { type: "comment.upsert", comment },
+      { type: "comment.upsert", comment: { ...comment, id: "comment-timeline-2", parentId: comment.id } },
+      { type: "message.add", message: { id: "message-timeline-1", threadId: "dm-player-heroine", senderId: "account-heroine-cover", createdAt: output.storyTime, text: "第一段", status: "read", isPlayerInput: false } },
+      { type: "message.add", message: { id: "message-timeline-2", threadId: "dm-player-heroine", senderId: "account-heroine-cover", createdAt: output.storyTime, text: "第二段", status: "read", isPlayerInput: false } }
+    ];
+
+    const normalized = normalizeAiTimeline(base, output);
+    const comments = normalized.events.filter((event) => event.type === "comment.upsert");
+    const messages = normalized.events.filter((event) => event.type === "message.add");
+    expect(Date.parse(comments[1]!.comment.createdAt) - Date.parse(comments[0]!.comment.createdAt)).toBe(45_000);
+    expect(Date.parse(messages[1]!.message.createdAt) - Date.parse(messages[0]!.message.createdAt)).toBe(20_000);
+    expect(Date.parse(normalized.storyTime)).toBeGreaterThan(Date.parse(output.storyTime));
+
+    const next = applyAiOutput(base, normalized);
+    expect(next.mvu.storyTime).toBe(normalized.storyTime);
+    expect(next.comments.find((item) => item.id === "comment-timeline-1")?.createdAt).toBe(comments[0]!.comment.createdAt);
   });
 
   it("replaces an imported post total with the actual stored post count", () => {

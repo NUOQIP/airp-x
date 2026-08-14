@@ -312,6 +312,14 @@ export const DerivedFanPlanSchema = z.object({
   nextTargetFollowers: z.number().int().positive().optional()
 }).strict();
 
+export const DerivedCorruptionSchema = z.object({
+  score: z.number().int().min(1).max(100),
+  range: z.string().regex(/^\d{1,3}-\d{1,3}$/),
+  label: z.string().min(1).max(40),
+  description: z.string().min(1).max(500),
+  nextStageAtFollowers: z.number().int().positive().optional()
+}).strict();
+
 function migrateLegacyMvu(value: unknown) {
   if (!isRecord(value)) return value;
   const heroine = isRecord(value.heroine) ? { ...value.heroine } : {};
@@ -327,9 +335,16 @@ function migrateLegacyMvu(value: unknown) {
   platform.appliedImpactIds ??= [];
   platform.impactLedger ??= [];
   platform.fanGoals ??= [];
-  const derived = isRecord(value.derived) ? value.derived : {
+  const derived: Record<string, unknown> = isRecord(value.derived) ? { ...value.derived } : {
     cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: story },
     statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: story }
+  };
+  derived.corruption ??= {
+    score: 1,
+    range: "1-10",
+    label: "试探期",
+    description: "账号刚起步，对越界表达仍以试探、暗示和保留退路为主。",
+    nextStageAtFollowers: 11_000
   };
   return { ...value, heroine, platform, extensions, derived };
 }
@@ -369,7 +384,8 @@ export const MvuStateSchema = z.preprocess(migrateLegacyMvu, z.object({
   derived: z.object({
     cycle: DerivedCycleSchema,
     statistics: DerivedStatisticsSchema,
-    fanPlan: DerivedFanPlanSchema.optional()
+    fanPlan: DerivedFanPlanSchema.optional(),
+    corruption: DerivedCorruptionSchema
   }).strict()
 }).strict());
 

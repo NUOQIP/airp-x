@@ -23,7 +23,7 @@ import {
 import { createBlankStorySnapshot, PLAYER_ID, SESSION_ID } from "../db/defaults.js";
 import { generateAiTurn } from "./ai-client.js";
 import { assembleContext } from "./context-service.js";
-import { applyAiOutput, validateRuleConstraints } from "./story-engine.js";
+import { applyAiOutput, normalizeAiTimeline, validateRuleConstraints } from "./story-engine.js";
 import { applyOutputRegex } from "./regex-service.js";
 import { synchronizeDerivedProfileStats } from "./snapshot-normalizer.js";
 import { withBranchLock } from "./branch-lock.js";
@@ -311,15 +311,15 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
       ? (await db.select().from(checkpoints).where(and(eq(checkpoints.branchId, branch.id), eq(checkpoints.sequence, Math.max(0, turn.sequence - 1)))).limit(1))[0]
       : undefined;
     const baseSummary = previousCheckpoint?.summaryText ?? branch.rollingSummary;
-    const context = await assembleContext(turn.branchId, input, inputStory, baseSummary);
-    const output = stampGeneratedMessages(
+    const context = await assembleContext(turn.branchId, input, inputStory, baseSummary, turn.id);
+    const output = normalizeAiTimeline(inputStory, stampGeneratedMessages(
       await applyOutputRegex(await generateAiTurn(context.messages, context.settings, {
         turnId: turn.id,
         branchId: branch.id
       })),
       turn.id,
       input.kind === "comment" ? 0 : input.speechSegments.length
-    );
+    ));
     validateRuleConstraints(inputStory, output, context.rule);
     const nextStory = applyAiOutput(inputStory, output);
     const candidateId = nanoid();

@@ -263,6 +263,64 @@ export function parseRuleConfig(rawText: string): ParsedRuleConfig | undefined {
   catch { return undefined; }
 }
 
+const aiEventComponents = [
+  "account.upsert", "post.upsert", "post.remove", "post.moderate", "comment.upsert", "comment.moderate",
+  "thread.upsert", "message.add", "live.upsert", "profile.patch", "profile.item.append", "profile.item.add",
+  "profile.item.remove", "statistics.insemination.append", "fan.goal.add", "fan.goal.upsert", "poll.resolve",
+  "platform.impact", "platform.notice", "platform.trend.upsert", "platform.trend.remove", "platform.trends (legacy-only; forbidden)"
+];
+
+export function buildAiRulePrompt(rawText: string) {
+  const config = normalizeRuleConfig(rawText).config;
+  const hard = config.hard_constraints;
+  return stringify({
+    schema_version: config.schema_version,
+    rule_name: config.rule_name,
+    accounts: config.accounts,
+    ai_runtime_contract: {
+      component_catalog: {
+        events: aiEventComponents,
+        mvu_operations: ["set", "increment", "append", "remove"],
+        render_panels: ["profile", "post", "comments", "dm", "group", "live", "poll", "notice"],
+        homepage_tabs: hard.homepage.tabs,
+        homepage_sidebar: hard.homepage.sidebar_home,
+        profile_permissions: hard.profile.permission_types
+      },
+      canonical_sources: hard.canonical_sources,
+      required_each_turn: hard.profile.required_temporary_updates_each_turn,
+      state_boundaries: {
+        locked_ai_writable: false,
+        computed_ai_writable: false,
+        append_only_requires_append_event: true,
+        private_account_post_visibility: "followers",
+        director_instruction_is_hidden: true,
+        existing_posts_and_comments_immutable: true
+      },
+      derived_corruption: {
+        source: "profile.followerCount",
+        formula: "clamp(floor(followerCount / 1000), 1, 100)",
+        bands: "1-10,11-20,21-30,31-40,41-50,51-60,61-70,71-80,81-90,91-100",
+        ai_writable: false,
+        instruction: "Never portray a corruption stage beyond mvu.derived.corruption; use its label and description as the current pacing ceiling."
+      },
+      event_timeline: {
+        timestamps_are_program_normalized: true,
+        output_story_time_is_extended_when_needed: true
+      },
+      cycle: hard.cycle,
+      limits: {
+        ai_extension_sections: hard.homepage.max_ai_extension_sections,
+        items_per_ai_extension: hard.homepage.max_items_per_ai_extension,
+        render_panels: [hard.render_plan.min_panels, hard.render_plan.max_panels],
+        representative_comments_target: hard.posts.representative_comments,
+        live_queue_items: [hard.live.min_queue_items, hard.live.max_queue_items],
+        live_requires_barrage: hard.live.require_barrage
+      }
+    },
+    original_rule: config.original_rule
+  }, { lineWidth: 0, indent: 1 });
+}
+
 export function assertRuleConfig(rawText: string) {
   const normalized = normalizeRuleConfig(rawText);
   const parsed = RuleYamlSchema.parse(normalized.config);

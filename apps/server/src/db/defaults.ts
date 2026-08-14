@@ -130,7 +130,8 @@ export function createBlankStorySnapshot(): StorySnapshot {
       extensions: { homepageConfigured: false, homepageSource: "", identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } },
       derived: {
         cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: blankTime },
-        statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: blankTime }
+        statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: blankTime },
+        corruption: { score: 1, range: "1-10", label: "试探期", description: "账号刚起步，对越界表达仍以试探、暗示和保留退路为主。", nextStageAtFollowers: 11_000 }
       }
     },
     trends: [],
@@ -365,7 +366,8 @@ export function createInitialStorySnapshot(): StorySnapshot {
       derived: {
         cycle: { phase: "ovulation", cycleDay: 4, nextChangeAt: "2026-10-26T15:07+08:00" },
         statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: "2026-10-26T00:00+08:00" },
-        fanPlan: { activeGoalId: "fan-goal-150k", targetFollowers: 150_000, currentFollowers: 113_000, progressPercent: 75.33, reward: "", completed: false }
+        fanPlan: { activeGoalId: "fan-goal-150k", targetFollowers: 150_000, currentFollowers: 113_000, progressPercent: 75.33, reward: "", completed: false },
+        corruption: { score: 100, range: "91-100", label: "彻底沉沦期", description: "账号人格与现实选择高度统一，几乎不再为曾经的边界保留退路。" }
       }
     },
     trends: [

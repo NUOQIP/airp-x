@@ -4,11 +4,11 @@ import { db } from "../db/client.js";
 import { branches, localActions, promptBlocks, roleCards, rulePresets, turnCandidates, turns, userMacros, worldbookEntries, worldbooks } from "../db/schema.js";
 import { getPromptPresetState, getRuntimeSettings } from "./config-service.js";
 import { stringifyContextValue } from "./context-sanitizer.js";
-import { parseRuleConfig } from "./rule-config.js";
+import { buildAiRulePrompt, parseRuleConfig } from "./rule-config.js";
 import { buildWorldbookScanText, selectWorldbookBudget, worldbookScopeEnabled } from "./context-policy.js";
-import { buildProfileContextState, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+import { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
-export { buildProfileContextState, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+export { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
 export interface PromptMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ContextBreakdown { label: string; estimatedTokens: number; mandatory: boolean }
@@ -53,18 +53,18 @@ function renderMacros(content: string, values: Record<string, string>) {
   return content.replace(/\{\{([A-Za-z0-9_.-]+)}}/g, (match, name: string) => values[name] ?? match);
 }
 
-export async function assembleContext(branchId: string, input: PlayerTurnInput, snapshot: StorySnapshot, rollingSummaryOverride?: string) {
+export async function assembleContext(branchId: string, input: PlayerTurnInput, snapshot: StorySnapshot, rollingSummaryOverride?: string, currentTurnId?: string) {
   const visibleInput = visibleTurnText(input);
   const directorInstruction = hiddenDirectorInstruction(input);
   const runtime = await getRuntimeSettings();
-  const [branchRows, cards, prompts, rules, books, entries, recentTurns, macroRows, pendingActionRows] = await Promise.all([
+  const [branchRows, cards, prompts, rules, books, entries, recentTurnRows, macroRows, pendingActionRows] = await Promise.all([
     db.select().from(branches).where(eq(branches.id, branchId)).limit(1),
     db.select().from(roleCards).where(eq(roleCards.active, true)),
     db.select().from(promptBlocks).orderBy(asc(promptBlocks.sortOrder)),
     db.select().from(rulePresets).where(eq(rulePresets.active, true)).limit(1),
     db.select().from(worldbooks).where(eq(worldbooks.enabled, true)),
     db.select().from(worldbookEntries).where(eq(worldbookEntries.enabled, true)).orderBy(asc(worldbookEntries.sortOrder)),
-    db.select().from(turns).where(and(eq(turns.branchId, branchId), eq(turns.status, "complete"))).orderBy(desc(turns.sequence)).limit(runtime.recentHistoryMessages),
+    db.select().from(turns).where(eq(turns.branchId, branchId)).orderBy(desc(turns.sequence)).limit(runtime.recentHistoryMessages),
     db.select().from(userMacros).where(eq(userMacros.enabled, true)),
     db.select().from(localActions).where(and(eq(localActions.branchId, branchId), isNull(localActions.consumedAt))).orderBy(asc(localActions.createdAt))
   ]);
@@ -76,6 +76,20 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const promptPresetState = await getPromptPresetState(prompts);
   const activePromptPreset = promptPresetState.presets.find((preset) => preset.id === promptPresetState.activePresetId) ?? promptPresetState.presets[0]!;
   const parsedRule = parseRuleConfig(rule.rawText);
+  const recentTurns = recentTurnRows.filter((turn) => turn.status === "complete");
+  const failedTurns = recentTurnRows.filter((turn) => turn.status === "failed");
+  const failedTurnIds = new Set(failedTurns.map((turn) => turn.id));
+  const recordIds = (turn: (typeof recentTurnRows)[number]) => {
+    try {
+      const parsed = JSON.parse(turn.inputRecordIdsJson) as unknown;
+      if (Array.isArray(parsed)) return parsed.filter((value): value is string => typeof value === "string");
+    } catch { /* Fall back to the legacy single record id. */ }
+    return [turn.inputRecordId];
+  };
+  const currentTurn = currentTurnId ? recentTurnRows.find((turn) => turn.id === currentTurnId) : undefined;
+  const currentRecordIds = new Set(currentTurn ? recordIds(currentTurn) : []);
+  const failedRecordIds = new Set(failedTurns.flatMap(recordIds));
+  const recentPlatformOptions = { ...(currentTurnId ? { currentTurnId } : {}), currentRecordIds, failedTurnIds, failedRecordIds };
   const markerEnabled = (marker: PromptStackMarker) => activePromptPreset.items.some((item) => item.kind === "marker" && item.marker === marker && item.enabled);
   const activePromptItems = activePromptPreset.items.filter((item): item is Extract<PromptPresetItem, { kind: "prompt" }> => item.kind === "prompt" && item.enabled);
 
@@ -101,7 +115,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     }
     mandatory.push({ label: `提示词：${prompt.name}`, message: { role: prompt.role, content: renderMacros(prompt.content, macros) } });
   }
-  if (markerEnabled("rules")) mandatory.push({ label: "规则预设", message: { role: "system", content: `# 全局玩法规则\n${rule.rawText}` } });
+  if (markerEnabled("rules")) mandatory.push({ label: "规则预设", message: { role: "system", content: `# 全局玩法规则\n${buildAiRulePrompt(rule.rawText)}` } });
   if (markerEnabled("player_card")) mandatory.push({ label: "玩家角色卡", message: { role: "system", content: `# 玩家角色卡（只读）\n${renderMacros(playerCard.rawText, playerMacros)}` } });
   if (markerEnabled("heroine_card")) mandatory.push({ label: "女主角色卡", message: { role: "system", content: `# 女主角色卡（只读）\n${renderMacros(heroineCard.rawText, heroineMacros)}` } });
   const contextMvu = structuredClone(snapshot.mvu);
@@ -149,10 +163,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     return lines;
   });
   const historyText = historyLines.join("\n");
+  const recentPlatformScan = buildRecentPlatformScanText(snapshot, recentPlatformOptions);
   const scanSources = {
-    posts: snapshot.posts.map((post) => post.text),
-    comments: snapshot.comments.map((comment) => comment.text),
-    messages: snapshot.messages.map((message) => message.text),
+    posts: recentPlatformScan.posts,
+    comments: recentPlatformScan.comments,
+    messages: recentPlatformScan.messages,
     history: historyLines,
     currentInput: visibleInput
   };
@@ -235,7 +250,7 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const rollingSummary = rollingSummaryOverride ?? branch.rollingSummary;
   if (rollingSummary && markerEnabled("rolling_memory")) optional.push({ role: "system", content: `# 滚动记忆\n${rollingSummary}` });
   if (historyText && markerEnabled("recent_history")) optional.push({ role: "system", content: `# 最近玩家回合（由旧到新）\n${historyText}` });
-  if (markerEnabled("recent_platform")) optional.push({ role: "system", content: `# 最近平台事件\n${stringifyContextValue({ posts: snapshot.posts.slice(-10), comments: snapshot.comments.slice(-20), messages: snapshot.messages.slice(-20), localState: snapshot.notices.slice(-10) })}` });
+  if (markerEnabled("recent_platform")) optional.push({ role: "system", content: `# 最近平台事件\n${stringifyContextValue(buildRecentPlatformContext(snapshot, recentPlatformOptions))}` });
   const optionalMessages: PromptMessage[] = [];
   for (const message of optional) {
     const cost = estimateTokens(message.content);

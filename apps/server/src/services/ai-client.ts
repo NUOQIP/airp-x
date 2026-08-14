@@ -12,16 +12,16 @@ import { startAiTrace } from "./ai-log.js";
 import { parseModelJsonObject } from "./model-output.js";
 import { config } from "../config.js";
 
-const outputJsonSchema = zodToJsonSchema(AiTurnOutputSchema, {
+export const outputJsonSchema = zodToJsonSchema(AiTurnOutputSchema, {
   name: "airp_turn_output",
   target: "openAi",
-  $refStrategy: "root"
+  $refStrategy: "seen"
 });
 
 const homepageJsonSchema = zodToJsonSchema(HomepageDraftSchema, {
   name: "airp_homepage_draft",
   target: "openAi",
-  $refStrategy: "root"
+  $refStrategy: "seen"
 });
 
 const stateWriteContractV2: PromptMessage = {
@@ -38,10 +38,14 @@ const stateWriteContractV2: PromptMessage = {
     "Do not write mvu.derived, revision, computed counters, profile follower/post counts, interaction metrics, trend rank, trend heatScore, or volumeLabel.",
     "Existing posts and comments are immutable: post.upsert and comment.upsert create new ids only. Use post.remove/comment.moderate for supported later state changes.",
     "When publishing a post, aim for the configured representative_comments target and include at least one coherent accompanying comment when that target is non-zero. A smaller coherent set is valid and must not be padded with repetitive filler.",
+    "Posts authored by a private account are always followers-only; the program normalizes visibility. Never portray a private-account post as publicly visible to non-followers.",
     "platform.impact carries qualitative kind/scale only. platform.trend.upsert/remove carries stable identity and qualitative heat only; the program computes all numbers and ranking.",
+    "mvu.derived.corruption is a hidden, program-computed 1-100 pacing ceiling derived from followerCount. Never write it and never portray behavior beyond its current label/description. Progress within the current band is allowed; crossing bands happens only through computed follower growth.",
     "Use statistics.insemination.append for new count/volumeMl records, profile.item.append for milestone/history records, and fan.goal.upsert for fan goals. Only unfinished current/future goals may be updated; completed goals are immutable.",
     "The biological cycle is 7 story-days: menstruation 1, follicular 2, ovulation 1, luteal 3. AI controls storyTime. Pregnancy has one legal transition chain: none -> suspected -> confirmed -> ended -> none. A turn may keep the current state, but never skip, reverse, or transition directly from none to confirmed. Only on suspected -> confirmed, choose durationDays, conceptionAt, and confirmedAt once; never rewrite them afterward. Only on confirmed -> ended, set a new heroine.cycle.anchorDate in that same turn; only a later ended -> none transition returns to the ordinary cycle.",
     "For DM/group turns, speechSegments are character-visible messages. directorInstruction is a hidden Master directive for this turn only; never quote it, turn it into a message, or treat it as character knowledge. A director-only turn contains no player speech.",
+    "A recent-platform record marked responseState=unanswered_failed_turn is an older unanswered input whose generation failed. Keep it as continuity context, but do not mistake it for the latest question; the separately labelled current input always has priority.",
+    "The program spaces generated posts, comments, and message bubbles on a chronological event timeline and may extend storyTime. Emit events in intended narrative order; do not rely on identical timestamps to imply simultaneity.",
     "Use one message.add per natural chat bubble and preserve conversational order. renderPlan may have zero panels and must include only components that actually changed; a profile panel is never mandatory."
   ].join("\n")
 };

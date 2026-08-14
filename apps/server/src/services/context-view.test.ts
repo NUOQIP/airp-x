@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlayerTurnInput, StorySnapshot } from "@airp/shared";
-import { buildProfileContextState, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
+import { buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
 describe("context view", () => {
   it("keeps the hidden director instruction out of character-visible text", () => {
@@ -62,5 +62,38 @@ describe("context view", () => {
     expect(context.structure).not.toHaveProperty("bannerUrl");
     expect(context.structure).not.toHaveProperty("location");
     expect(context.structure).not.toHaveProperty("currentStoryTime");
+  });
+
+  it("excludes the current input and marks older failed inputs as unanswered", () => {
+    const metrics = { replies: 0, reposts: 0, likes: 0, views: 0, bookmarks: 0 };
+    const snapshot = {
+      posts: [], notices: [],
+      comments: [
+        { id: "current-comment", postId: "post", authorId: "account-player", createdAt: "2026-01-01T00:00+08:00", text: "当前评论", metrics, moderation: "visible" },
+        { id: "failed-comment", postId: "post", authorId: "account-player", createdAt: "2026-01-01T00:00+08:00", text: "失败评论", metrics, moderation: "visible" },
+        { id: "normal-comment", postId: "post", authorId: "npc", createdAt: "2026-01-01T00:00+08:00", text: "普通评论", metrics, moderation: "visible" }
+      ],
+      messages: [
+        { id: "current-message", threadId: "dm", senderId: "account-player", createdAt: "2026-01-01T00:00+08:00", text: "当前私信", status: "sent", isPlayerInput: true, turnId: "turn-current" },
+        { id: "failed-message", threadId: "dm", senderId: "account-player", createdAt: "2026-01-01T00:00+08:00", text: "失败私信", status: "sent", isPlayerInput: true, turnId: "turn-failed" },
+        { id: "normal-message", threadId: "dm", senderId: "npc", createdAt: "2026-01-01T00:00+08:00", text: "普通私信", status: "read", isPlayerInput: false, turnId: "turn-old" }
+      ]
+    } as unknown as StorySnapshot;
+    const options = {
+      currentTurnId: "turn-current",
+      currentRecordIds: new Set(["current-comment"]),
+      failedTurnIds: new Set(["turn-failed"]),
+      failedRecordIds: new Set(["failed-comment"])
+    };
+
+    const context = buildRecentPlatformContext(snapshot, options);
+    expect(context.messages.map((message) => message.id)).not.toContain("current-message");
+    expect(context.comments.map((comment) => comment.id)).not.toContain("current-comment");
+    expect(context.messages.find((message) => message.id === "failed-message")).toMatchObject({ responseState: "unanswered_failed_turn" });
+    expect(context.comments.find((comment) => comment.id === "failed-comment")).toMatchObject({ responseState: "unanswered_failed_turn" });
+
+    const scan = buildRecentPlatformScanText(snapshot, options);
+    expect(scan.messages).toEqual(["普通私信"]);
+    expect(scan.comments).toEqual(["普通评论"]);
   });
 });

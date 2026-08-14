@@ -384,7 +384,76 @@ function applyEvent(snapshot: StorySnapshot, event: DomainEvent, eventTime = sna
   }
 }
 
+function timezoneOffsetMinutes(value: string) {
+  const match = value.match(/([+-])(\d{2}):(\d{2})$/);
+  if (!match) return 0;
+  const amount = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === "-" ? -amount : amount;
+}
+
+function formatStoryTime(epochMs: number, reference: string) {
+  const offsetMinutes = timezoneOffsetMinutes(reference);
+  const includeSeconds = epochMs % 60_000 !== 0 || /T\d{2}:\d{2}:\d{2}/.test(reference);
+  const shifted = new Date(epochMs + offsetMinutes * 60_000).toISOString().slice(0, includeSeconds ? 19 : 16);
+  if (!/([+-])\d{2}:\d{2}$/.test(reference)) return shifted;
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  return `${shifted}${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
+}
+
+function eventGapSeconds(event: DomainEvent) {
+  if (event.type === "post.upsert") return 60;
+  if (event.type === "comment.upsert") return 45;
+  if (event.type === "message.add") return 20;
+  return 0;
+}
+
+function buildEventTimeline(base: StorySnapshot, output: AiTurnOutput) {
+  const baseTime = Date.parse(base.mvu.storyTime);
+  const requestedTime = Date.parse(output.storyTime);
+  if (!Number.isFinite(requestedTime)) throw new Error(`Invalid story time: ${output.storyTime}`);
+  if (Number.isFinite(baseTime) && requestedTime < baseTime) throw new Error("Story time cannot move backwards");
+  const totalDurationMs = output.events.reduce((sum, event) => sum + eventGapSeconds(event) * 1_000, 0);
+  let cursor = Number.isFinite(baseTime) ? Math.max(baseTime, requestedTime - totalDurationMs) : requestedTime - totalDurationMs;
+  const eventTimes = output.events.map((event) => {
+    cursor += eventGapSeconds(event) * 1_000;
+    return formatStoryTime(cursor, output.storyTime);
+  });
+  return { eventTimes, finalStoryTime: formatStoryTime(Math.max(requestedTime, cursor), output.storyTime) };
+}
+
+function stampEventTime(event: DomainEvent, eventTime: string): DomainEvent {
+  if (event.type === "post.upsert") return { ...event, post: { ...event.post, createdAt: eventTime } };
+  if (event.type === "comment.upsert") return { ...event, comment: { ...event.comment, createdAt: eventTime } };
+  if (event.type === "message.add") return { ...event, message: { ...event.message, createdAt: eventTime } };
+  if (event.type === "thread.upsert") return { ...event, thread: { ...event.thread, updatedAt: eventTime } };
+  if (event.type === "platform.notice") return { ...event, createdAt: eventTime };
+  if (event.type === "platform.trend.upsert") return { ...event, trend: { ...event.trend, updatedAt: eventTime } };
+  if (event.type === "statistics.insemination.append") return { ...event, record: { ...event.record, occurredAt: eventTime } };
+  if (event.type === "fan.goal.add" || event.type === "fan.goal.upsert") return { ...event, goal: { ...event.goal, createdAt: eventTime } };
+  return event;
+}
+
+export function normalizeAiTimeline(base: StorySnapshot, output: AiTurnOutput): AiTurnOutput {
+  const normalized = clone(output);
+  const timeline = buildEventTimeline(base, normalized);
+  const privateAccountIds = new Set(base.accounts.filter((account) => account.isPrivate).map((account) => account.id));
+  normalized.events = normalized.events.map((event, index) => {
+    if (event.type === "account.upsert") {
+      if (event.account.isPrivate) privateAccountIds.add(event.account.id);
+      else privateAccountIds.delete(event.account.id);
+    }
+    const privacyNormalized = event.type === "post.upsert" && privateAccountIds.has(event.post.authorId)
+      ? { ...event, post: { ...event.post, visibility: "followers" as const } }
+      : event;
+    return stampEventTime(privacyNormalized, timeline.eventTimes[index]!);
+  });
+  normalized.storyTime = timeline.finalStoryTime;
+  return normalized;
+}
+
 export function applyAiOutput(base: StorySnapshot, output: AiTurnOutput): StorySnapshot {
+  output = normalizeAiTimeline(base, output);
   const oldTime = Date.parse(base.mvu.storyTime);
   const newTime = Date.parse(output.storyTime);
   if (!Number.isFinite(newTime)) throw new Error(`Invalid story time: ${output.storyTime}`);
@@ -392,7 +461,8 @@ export function applyAiOutput(base: StorySnapshot, output: AiTurnOutput): StoryS
   const next = clone(base);
   const previousPregnancy = clone(base.mvu.heroine.cycle.pregnancy);
   const previousAnchorDate = base.mvu.heroine.cycle.anchorDate;
-  for (const event of output.events) applyEvent(next, event, output.storyTime);
+  const { eventTimes } = buildEventTimeline(base, output);
+  for (const [index, event] of output.events.entries()) applyEvent(next, event, eventTimes[index]!);
   const mutable = next.mvu as unknown as Record<string, unknown>;
   for (const operation of output.mvuOperations) setAtPath(mutable, operation.path, operation.op, "value" in operation ? operation.value : undefined);
   next.mvu.storyTime = output.storyTime;
