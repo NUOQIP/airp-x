@@ -94,7 +94,7 @@ export function MessagesPage() {
       } }
     );
   };
-  return <div className="grid h-screen grid-cols-[255px_1fr] overflow-hidden">
+  return <div className="messages-layout grid h-screen overflow-hidden">
     <section className="border-r border-line">
       <header className="flex h-[53px] items-center justify-between px-4"><h1 className="panel-title">私信</h1><Mail size={20} /></header>
       <div className="mx-3 mb-2 flex items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-muted"><Search size={16} /><input aria-label="搜索私信" className="w-full bg-transparent text-sm outline-none" placeholder="搜索私信" value={search} onChange={(event) => setSearch(event.target.value)} /></div>

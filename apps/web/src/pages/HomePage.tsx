@@ -182,7 +182,7 @@ export function HomePage() {
       <div className="min-w-0"><h1 className="truncate text-xl font-extrabold leading-5">{account.displayName}</h1><div key={`post-count:${data.profile.postCount}`} className="component-refresh text-xs text-muted">{compactNumber(data.profile.postCount)} 帖文</div></div>
     </header>
     <section>
-      <div className={`profile-banner relative h-[200px] overflow-hidden bg-gradient-to-br ${bannerClass[data.profile.bannerTone]}`} style={safeBannerUrl ? { backgroundImage: `url(${safeBannerUrl})`, backgroundPosition: "center", backgroundSize: "cover" } : undefined}>
+      <div className={`profile-banner relative aspect-[1200/370] min-h-[200px] max-h-[340px] overflow-hidden bg-gradient-to-br ${bannerClass[data.profile.bannerTone]}`} style={safeBannerUrl ? { backgroundImage: `url(${safeBannerUrl})`, backgroundPosition: "center", backgroundSize: "cover" } : undefined}>
         {!safeBannerUrl && <><div className="absolute -right-16 -top-24 h-72 w-72 rounded-full bg-white/20" /><div className="absolute bottom-5 left-40 h-24 w-80 -rotate-6 rounded-full bg-white/15" /></>}
         <button type="button" onClick={() => setBannerEditorOpen(true)} className="absolute right-4 top-3 flex items-center gap-1.5 rounded-full border border-white/40 bg-black/35 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md transition hover:bg-black/55"><Pencil size={13} />编辑封面</button>
         <div className="absolute bottom-3 right-4 flex items-center gap-1.5 rounded-full border border-white/40 bg-black/20 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md"><Clock3 size={13} />{storyDate(data.mvu.storyTime)}</div>

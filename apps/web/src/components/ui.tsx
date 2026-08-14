@@ -28,10 +28,10 @@ export function Modal({ open, onOpenChange, title, children, footer }: PropsWith
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
-      <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[88vh] w-[720px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4"><Dialog.Title className="text-xl font-extrabold">{title}</Dialog.Title><Dialog.Close aria-label="关闭" className="x-icon-button"><X size={20} /></Dialog.Close></div>
-        <div className="max-h-[70vh] overflow-y-auto p-5">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-line px-5 py-4">{footer}</div>}
+      <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[720px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-line px-5 py-4"><Dialog.Title className="text-xl font-extrabold">{title}</Dialog.Title><Dialog.Close aria-label="关闭" className="x-icon-button"><X size={20} /></Dialog.Close></div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer && <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-5 py-4">{footer}</div>}
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>;

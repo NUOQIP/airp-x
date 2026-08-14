@@ -16,6 +16,12 @@ body { min-width: 1180px; overflow-y: scroll; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
+.app-shell { width: min(100%, 1720px); }
+.app-shell-rail { grid-template-columns: clamp(220px, 15%, 280px) minmax(620px, 1fr) clamp(310px, 21%, 380px); }
+.app-shell-wide { grid-template-columns: clamp(220px, 15%, 280px) minmax(0, 1fr); }
+.app-right-rail { padding-inline: clamp(16px, 1.5vw, 28px); }
+.messages-layout { grid-template-columns: clamp(240px, 28%, 320px) minmax(0, 1fr); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

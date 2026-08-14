@@ -20,7 +20,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const showRail = !configWide && (fullRail || trendsOnlyRail);
   const { data } = useSnapshot();
   const player = data?.accounts.find((item) => item.id === "account-player");
-  return <div className={`mx-auto grid min-h-screen w-[1265px] ${configWide || !showRail ? "grid-cols-[260px_1005px]" : "grid-cols-[260px_650px_355px]"}`}>
+  return <div className={`app-shell mx-auto grid min-h-screen ${configWide || !showRail ? "app-shell-wide" : "app-shell-rail"}`}>
     <aside className="sticky top-0 flex h-screen flex-col border-r border-line px-3 py-3">
       <NavLink to="/" className="mb-3 grid h-12 w-12 place-items-center rounded-full hover:bg-slate-100" aria-label="Airp X 主页">
         <div className="grid h-9 w-9 place-items-center rounded-xl bg-ink text-white"><Sparkles size={21} /></div>
@@ -38,8 +38,8 @@ export function AppShell({ children }: PropsWithChildren) {
         </div>
       </div>
     </aside>
-    <main className="min-h-screen border-r border-line">{children}</main>
-    {showRail && <aside className="sticky top-0 h-screen overflow-y-auto px-6 py-3">
+    <main className="min-h-screen min-w-0 border-r border-line">{children}</main>
+    {showRail && <aside className="app-right-rail sticky top-0 h-screen min-w-0 overflow-y-auto py-3">
       {data && <RightRail snapshot={data} mode={fullRail ? "full" : "trends"} />}
     </aside>}
   </div>;

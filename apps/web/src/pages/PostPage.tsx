@@ -12,7 +12,8 @@ function CommentItem({ comment, childrenByParent, snapshot, onReply, depth = 0 }
   const author = snapshot.accounts.find((item) => item.id === comment.authorId);
   if (!author || comment.moderation === "deleted" || comment.moderation === "hidden") return null;
   const children = childrenByParent.get(comment.id) ?? [];
-  return <div className={depth ? "ml-10 border-l-2 border-line pl-2" : ""}>
+  const nestingClass = depth === 0 ? "" : `${depth <= 2 ? "ml-8 " : ""}border-l-2 border-line pl-2`;
+  return <div className={nestingClass}>
     <article className="border-b border-line px-4 py-3 hover:bg-slate-50">
       <div className="flex gap-3"><Avatar name={author.displayName} seed={author.avatarSeed} text={author.avatarText} url={author.avatarUrl} /><div className="min-w-0 flex-1">
         <div className="text-[15px]"><span className="font-bold">{author.displayName}{author.verified && <Verified />}</span><span className="ml-1 text-muted">@{author.handle} · {storyDate(comment.createdAt)}</span></div>
