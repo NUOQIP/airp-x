@@ -10,6 +10,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PromptMessage } from "./context-service.js";
 import { startAiTrace } from "./ai-log.js";
 import { parseModelJsonObject } from "./model-output.js";
+import { config } from "../config.js";
 
 const outputJsonSchema = zodToJsonSchema(AiTurnOutputSchema, {
   name: "airp_turn_output",
@@ -184,7 +185,54 @@ function parseProviderResponse(text: string): ProviderResponse {
   return parsed as ProviderResponse;
 }
 
+async function providerFetch(requestUrl: string, headers: Record<string, string>, requestBody: object) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.aiRequestTimeoutMs);
+  try {
+    return await fetch(requestUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+      redirect: "error"
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new AiProviderError(504, `AI 请求超过 ${Math.ceil(config.aiRequestTimeoutMs / 1000)} 秒，已自动取消`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function readProviderResponseText(response: Response, maxBytes = config.aiMaxResponseBytes) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel();
+        throw new AiProviderError(502, `AI 响应超过安全上限 ${Math.ceil(maxBytes / 1024 / 1024)} MiB`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function responseLogDetails(response: Response, body: ProviderResponse | undefined, rawBodyText: string | undefined, phase: string) {
+  const firstChoice = body?.choices?.[0];
+  const content = finalContentText(firstChoice?.message?.content);
+  const reasoning = firstChoice?.message?.reasoning_content;
   return {
     phase,
     http: {
@@ -193,7 +241,12 @@ function responseLogDetails(response: Response, body: ProviderResponse | undefin
       requestId: response.headers.get("x-request-id") ?? response.headers.get("request-id") ?? undefined
     },
     ...(rawBodyText === undefined ? {} : { rawBodyText }),
-    ...(body === undefined ? {} : { providerResponse: body })
+    ...(body?.usage === undefined ? {} : { usage: body.usage }),
+    ...(phase === "complete" && content !== undefined ? { contentLength: content.length } : {}),
+    ...(phase === "complete" && reasoning !== undefined ? { reasoningLength: reasoning.length } : {}),
+    ...(phase !== "complete" && firstChoice?.message !== undefined ? { message: firstChoice.message } : {}),
+    ...(firstChoice?.finish_reason === undefined ? {} : { finishReason: firstChoice.finish_reason }),
+    ...(body === undefined || phase === "complete" ? {} : { providerResponse: body })
   };
 }
 
@@ -225,9 +278,9 @@ export async function generateAiTurn(messages: PromptMessage[], settings: Runtim
   let body: ProviderResponse | undefined;
   let phase = "transport";
   try {
-    response = await fetch(requestUrl, { method: "POST", headers, body: JSON.stringify(requestBody) });
+    response = await providerFetch(requestUrl, headers, requestBody);
     phase = "http";
-    rawBodyText = await response.text();
+    rawBodyText = await readProviderResponseText(response);
     if (!response.ok) throw new AiProviderError(response.status, `AI 请求失败 (${response.status})：${parseFailureText(rawBodyText)}`);
     phase = "response_json";
     body = parseProviderResponse(rawBodyText);
@@ -295,9 +348,9 @@ export async function generateHomepageDraft(sourceText: string, settings: Runtim
   let body: ProviderResponse | undefined;
   let phase = "transport";
   try {
-    response = await fetch(requestUrl, { method: "POST", headers, body: JSON.stringify(requestBody) });
+    response = await providerFetch(requestUrl, headers, requestBody);
     phase = "http";
-    rawBodyText = await response.text();
+    rawBodyText = await readProviderResponseText(response);
     if (!response.ok) throw new AiProviderError(response.status, `AI 主页解析失败 (${response.status})：${parseFailureText(rawBodyText)}`);
     phase = "response_json";
     body = parseProviderResponse(rawBodyText);
@@ -349,9 +402,9 @@ export async function testStrictSchemaCapability(settings: RuntimeSettings) {
   let body: ProviderResponse | undefined;
   let phase = "transport";
   try {
-    response = await fetch(requestUrl, { method: "POST", headers, body: JSON.stringify(requestBody) });
+    response = await providerFetch(requestUrl, headers, requestBody);
     phase = "http";
-    rawBodyText = await response.text();
+    rawBodyText = await readProviderResponseText(response);
     if (!response.ok) throw new AiProviderError(response.status, `严格 Schema 测试失败 (${response.status})：${parseFailureText(rawBodyText)}`);
     phase = "response_json";
     body = parseProviderResponse(rawBodyText);

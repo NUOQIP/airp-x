@@ -2,10 +2,11 @@ import { asc, eq } from "drizzle-orm";
 import { AiTurnOutputSchema, type AiTurnOutput, type RegexRule } from "@airp/shared";
 import { db } from "../db/client.js";
 import { regexRules } from "../db/schema.js";
+import { compileSafeRegex } from "./regex-safety.js";
 
 function replace(value: string | undefined, rules: RegexRule[]) {
   if (value === undefined) return undefined;
-  return rules.reduce((text, rule) => text.replace(new RegExp(rule.pattern, rule.flags), rule.replacement), value);
+  return rules.reduce((text, rule) => text.replace(compileSafeRegex(rule.pattern, rule.flags), rule.replacement), value);
 }
 
 export async function applyOutputRegex(output: AiTurnOutput) {
@@ -58,4 +59,3 @@ export async function applyOutputRegex(output: AiTurnOutput) {
   }
   return AiTurnOutputSchema.parse(next);
 }
-

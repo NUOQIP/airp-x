@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fileMocks = vi.hoisted(() => ({
   mkdir: vi.fn(async () => undefined),
-  appendFile: vi.fn(async () => undefined)
+  appendFile: vi.fn(async () => undefined),
+  readdir: vi.fn(async () => []),
+  stat: vi.fn(async () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }),
+  unlink: vi.fn(async () => undefined)
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -12,6 +15,7 @@ vi.mock("node:fs/promises", () => ({
 
 import {
   aiLogDirectory,
+  expiredAiLogFilenames,
   flushAiLogs,
   sanitizeAiLogValue,
   startAiTrace
@@ -26,6 +30,9 @@ describe("AI request logging", () => {
     await flushAiLogs();
     fileMocks.mkdir.mockReset().mockResolvedValue(undefined);
     fileMocks.appendFile.mockReset().mockResolvedValue(undefined);
+    fileMocks.readdir.mockReset().mockResolvedValue([]);
+    fileMocks.stat.mockReset().mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    fileMocks.unlink.mockReset().mockResolvedValue(undefined);
     vi.restoreAllMocks();
   });
 
@@ -62,6 +69,15 @@ describe("AI request logging", () => {
     expect(output.nested.prose).toContain("[REDACTED_DATA_URL mime=text/plain chars=");
     expect(JSON.stringify(output)).not.toContain("private-payload");
     expect(input.nested.image).toBe(image);
+  });
+
+  it("selects only expired dated log files for retention cleanup", () => {
+    expect(expiredAiLogFilenames([
+      "ai-2026-07-01.jsonl",
+      "ai-2026-07-15-2.jsonl",
+      "ai-2026-08-01.jsonl",
+      "other.jsonl"
+    ], "2026-08-14", 30)).toEqual(["ai-2026-07-01.jsonl"]);
   });
 
   it("serializes Error fields, Zod-style issues, cycles, and long content without truncation", () => {

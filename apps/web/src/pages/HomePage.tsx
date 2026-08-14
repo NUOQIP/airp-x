@@ -11,7 +11,6 @@ import {
   Gauge,
   Link as LinkIcon,
   MapPin,
-  MoreHorizontal,
   Pencil,
   Radio,
   Sparkles
@@ -151,8 +150,9 @@ export function HomePage() {
       <p className="mt-3 text-xs text-muted">这一步不推进剧情，也不会自动生成帖文或私信。</p>
     </div>
   </div>;
-  const account = data.accounts.find((item) => item.id === data.profile.accountId)!;
-  const posts = [...data.posts].filter((post) => post.authorId === account.id && post.moderation !== "deleted").sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
+  const account = data.accounts.find((item) => item.id === data.profile.accountId);
+  if (!account) return <Empty title="主页账号缺失" detail="请从备份恢复或重新建设主页。" />;
+  const posts = [...data.posts].filter((post) => post.authorId === account.id && post.moderation !== "deleted" && post.moderation !== "hidden").sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
   const sections = [...data.profile.sections].sort((a, b) => {
     const priority = { status: 0, stats: 1, progress: 2, facts: 3, notice: 4, timeline: 5 };
     return priority[a.kind] - priority[b.kind] || a.order - b.order;
@@ -184,7 +184,7 @@ export function HomePage() {
             <span className="absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full border-2 border-white bg-black/65 text-white shadow-lg transition group-hover:bg-accent"><Pencil size={14} /></span>
           </button>
         </div>
-        <div className="flex h-[76px] items-start justify-end gap-2 pt-3"><button className="x-icon-button border border-slate-300 bg-white"><MoreHorizontal size={20} /></button><button className="x-secondary">正在关注</button></div>
+        <div className="flex h-[76px] items-start justify-end gap-2 pt-3"><span className="x-secondary cursor-default">正在关注</span></div>
         <h1 className="text-xl font-extrabold leading-6">{account.displayName}{account.verified && <Verified />}</h1>
         <div className="text-[15px] text-muted">@{account.handle}</div>
         <p className="plain-content mt-3 text-[15px] leading-5">{account.bio}</p>

@@ -16,7 +16,9 @@ function formatPlaybackTime(milliseconds: number) {
 
 export function LivePage() {
   const { data, isLoading } = useSnapshot();
-  const live = data?.lives.find((item) => item.status === "live") ?? data?.lives[0];
+  const live = data?.lives.find((item) => item.status === "live")
+    ?? data?.lives.find((item) => item.status === "scheduled")
+    ?? [...(data?.lives ?? [])].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
   const [paused, setPaused] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [speed, setSpeed] = useState<(typeof playbackSpeeds)[number]>(0.5);
@@ -35,7 +37,7 @@ export function LivePage() {
   }, [live]);
   const durationMs = playbackQueue.at(-1)?.playbackOffsetMs ?? 0;
   const revealed = useMemo<LiveQueueItem[]>(() => playbackQueue.filter((entry) => entry.playbackOffsetMs <= elapsed).map((entry) => entry.item), [elapsed, playbackQueue]);
-  useEffect(() => { setElapsed(0); setPaused(false); setScrubbing(false); }, [live?.id, data?.mvu.revision]);
+  useEffect(() => { setElapsed(0); setPaused(live?.status !== "live"); setScrubbing(false); }, [live?.id, live?.status, data?.mvu.revision]);
   useEffect(() => {
     if (!live || paused || scrubbing || durationMs === 0) return;
     const interval = window.setInterval(() => setElapsed((value) => Math.min(durationMs, value + 100 * speed)), 100);
@@ -46,10 +48,12 @@ export function LivePage() {
   const chat = revealed.filter((item) => item.kind === "barrage" || item.kind === "gift" || item.kind === "superchat");
   if (isLoading) return <div className="p-8"><Spinner label="接入直播" /></div>;
   if (!data || !live) return <Empty title="当前没有直播" detail="AI 创建直播事件后，这里会自动出现预生成的实时队列。" />;
-  const host = data.accounts.find((account) => account.id === live.hostId)!;
+  const host = data.accounts.find((account) => account.id === live.hostId);
+  if (!host) return <Empty title="直播账号缺失" detail="这场直播引用了不存在的主持账号。" />;
   const exhausted = revealed.length === live.queue.length;
+  const statusLabel = live.status === "live" ? "LIVE" : live.status === "scheduled" ? "预约" : "已结束";
   return <div>
-    <header className="sticky top-0 z-20 flex h-[53px] items-center justify-between border-b border-line bg-white/90 px-4 backdrop-blur-md"><h1 className="panel-title">直播</h1><span className="flex items-center gap-1.5 rounded-full bg-rose-500 px-3 py-1 text-xs font-extrabold text-white"><Radio size={13} />LIVE</span></header>
+    <header className="sticky top-0 z-20 flex h-[53px] items-center justify-between border-b border-line bg-white/90 px-4 backdrop-blur-md"><h1 className="panel-title">直播</h1><span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-extrabold text-white ${live.status === "live" ? "bg-rose-500" : "bg-slate-500"}`}><Radio size={13} />{statusLabel}</span></header>
     <section className="relative aspect-video overflow-hidden bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-800 text-white">
       <div className="absolute inset-0 opacity-30 [background-image:radial-gradient(circle_at_20%_30%,#ec4899_0,transparent_36%),radial-gradient(circle_at_80%_70%,#38bdf8_0,transparent_35%)]" />
       <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-black/45 px-3 py-1.5 backdrop-blur"><Avatar name={host.displayName} seed={host.avatarSeed} text={host.avatarText} url={host.avatarUrl} size="sm" /><span className="text-sm font-bold">{host.displayName}</span></div>
@@ -60,7 +64,7 @@ export function LivePage() {
       </div>
       <div className="absolute bottom-3 left-4 right-4 rounded-2xl bg-black/35 px-3 py-2 backdrop-blur-md">
         <div className="flex items-center gap-2.5">
-          <button type="button" aria-label={paused ? "继续播放" : "暂停播放"} onClick={() => setPaused(!paused)} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/15 hover:bg-white/25">{paused ? <Play size={17} /> : <Pause size={17} />}</button>
+          <button type="button" disabled={live.status === "scheduled"} aria-label={paused ? "继续播放" : "暂停播放"} onClick={() => setPaused(!paused)} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/15 hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-40">{paused ? <Play size={17} /> : <Pause size={17} />}</button>
           <Volume2 size={16} className="shrink-0 text-white/75" />
           <input
             type="range"
@@ -69,7 +73,7 @@ export function LivePage() {
             max={Math.max(1, durationMs)}
             step={100}
             value={Math.min(elapsed, Math.max(1, durationMs))}
-            disabled={durationMs === 0}
+            disabled={durationMs === 0 || live.status === "scheduled"}
             onPointerDown={() => setScrubbing(true)}
             onPointerUp={() => setScrubbing(false)}
             onPointerCancel={() => setScrubbing(false)}
@@ -86,7 +90,7 @@ export function LivePage() {
             {playbackSpeeds.map((value) => <option key={value} value={value} className="bg-slate-900 text-white">{value}×</option>)}
           </select>
         </div>
-        <div className="mt-0.5 text-right text-[10px] font-semibold text-white/60">{exhausted ? "队列已播完，可拖动回看" : scrubbing ? "正在定位" : paused ? "已暂停" : "播放中"}</div>
+        <div className="mt-0.5 text-right text-[10px] font-semibold text-white/60">{live.status === "scheduled" ? "直播尚未开始" : exhausted ? "队列已播完，可拖动回看" : scrubbing ? "正在定位" : paused ? "已暂停" : "播放中"}</div>
       </div>
     </section>
     <section className="border-b border-line p-4"><h2 className="text-xl font-extrabold">{live.title}</h2><div className="mt-2 flex items-center gap-3"><Avatar name={host.displayName} seed={host.avatarSeed} text={host.avatarText} url={host.avatarUrl} /><div><div className="font-bold">{host.displayName}</div><div className="text-sm text-muted">@{host.handle}</div></div></div><p className="plain-content mt-3 text-sm leading-6 text-muted">{live.sceneDescription}</p></section>

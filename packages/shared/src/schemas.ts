@@ -242,6 +242,29 @@ export const RenderPlanSchema = z.object({
   focus: z.object({ kind: z.enum(["home", "post", "dm", "group", "live"]), targetId: id.optional() }).strict().optional()
 }).strict();
 
+export const StorySnapshotSchema = z.object({
+  accounts: z.array(AccountSchema),
+  profile: HeroineProfileSchema,
+  posts: z.array(PostSchema),
+  comments: z.array(CommentSchema),
+  threads: z.array(ThreadSchema),
+  messages: z.array(MessageSchema),
+  lives: z.array(LiveSessionSchema),
+  mvu: MvuStateSchema,
+  trends: z.array(z.object({
+    label: z.string().max(100),
+    volumeLabel: z.string().max(60),
+    rank: z.number().int().positive()
+  }).strict()).max(20),
+  notices: z.array(z.object({
+    id,
+    level: z.enum(["info", "success", "warning", "danger"]),
+    text: plainText,
+    createdAt: storyTime
+  }).strict()),
+  pendingRenderPlan: RenderPlanSchema.optional()
+}).strict();
+
 export const AiTurnOutputSchema = z.object({
   schemaVersion: z.literal("1.0"),
   storyTime,
@@ -335,7 +358,10 @@ export const PromptPresetStateSchema = z.object({
 }).strict();
 
 export const RuntimeSettingsSchema = z.object({
-  apiBaseUrl: z.string().url(),
+  apiBaseUrl: z.string().url().refine((value) => {
+    const protocol = new URL(value).protocol;
+    return protocol === "https:" || protocol === "http:";
+  }, "API Base URL 仅支持 http 或 https"),
   apiKey: z.string(),
   model: z.string(),
   thinkingMode: z.enum(["enabled", "disabled"]),

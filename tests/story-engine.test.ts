@@ -50,6 +50,21 @@ describe("story engine", () => {
     expect(() => applyAiOutput(createInitialStorySnapshot(), output)).toThrow(/Unsafe MVU path/);
   });
 
+  it("starts an increment at zero when an extension counter does not exist yet", () => {
+    const output = validOutput();
+    output.mvuOperations = [{ op: "increment", path: "extensions.flags.reportCount", value: 1 }];
+    const next = applyAiOutput(createInitialStorySnapshot(), output);
+    expect(next.mvu.extensions).toMatchObject({ flags: { reportCount: 1 } });
+  });
+
+  it("still rejects incrementing an existing non-numeric value", () => {
+    const dirty = createInitialStorySnapshot();
+    dirty.mvu.extensions.flags = { reportCount: "one" };
+    const output = validOutput();
+    output.mvuOperations = [{ op: "increment", path: "extensions.flags.reportCount", value: 1 }];
+    expect(() => applyAiOutput(dirty, output)).toThrow("MVU increment requires a number");
+  });
+
   it("keeps the player DM on the heroine cover account", () => {
     const output = validOutput();
     output.events.push({

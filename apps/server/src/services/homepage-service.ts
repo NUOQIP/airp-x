@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { HomepageDraftSchema, type HomepageDraft, type StorySnapshot } from "@airp/shared";
+import { HomepageDraftSchema, StorySnapshotSchema, type HomepageDraft, type StorySnapshot } from "@airp/shared";
 import { db } from "../db/client.js";
 import { branches, checkpoints, turns } from "../db/schema.js";
 import { HEROINE_ID, PLAYER_ID, createBlankStorySnapshot, ensureHeroineCoverIdentity } from "../db/defaults.js";
@@ -7,6 +7,8 @@ import { generateHomepageDraft } from "./ai-client.js";
 import { getRuntimeSettings } from "./config-service.js";
 import { ContextBudgetError, type ContextBreakdown } from "./context-service.js";
 import { getAppSnapshot } from "./turn-service.js";
+import { withBranchLock } from "./branch-lock.js";
+import { conflict, notFound } from "./http-error.js";
 
 const estimateTokens = (text: string) => Math.ceil(text.length / 3.2);
 
@@ -29,15 +31,19 @@ export async function previewHomepage(sourceText: string): Promise<HomepageDraft
 }
 
 export async function applyHomepageDraft(branchId: string, sourceText: string, inputDraft: HomepageDraft) {
+  return withBranchLock(branchId, () => applyHomepageDraftUnlocked(branchId, sourceText, inputDraft));
+}
+
+async function applyHomepageDraftUnlocked(branchId: string, sourceText: string, inputDraft: HomepageDraft) {
   const draft = HomepageDraftSchema.parse(inputDraft);
   const [branch, firstTurn] = await Promise.all([
     db.select().from(branches).where(eq(branches.id, branchId)).limit(1).then((rows) => rows[0]),
     db.select({ id: turns.id }).from(turns).where(eq(turns.branchId, branchId)).limit(1).then((rows) => rows[0])
   ]);
-  if (!branch) throw new Error("分支不存在");
-  if (firstTurn) throw new Error("当前分支已有剧情回合，请先新建空白会话再建设主页");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
+  if (firstTurn) throw conflict("当前分支已有剧情回合，请先新建空白会话再建设主页", "HOMEPAGE_ALREADY_STARTED");
 
-  const current = JSON.parse(branch.currentSnapshotJson) as StorySnapshot;
+  const current = StorySnapshotSchema.parse(JSON.parse(branch.currentSnapshotJson));
   const fallback = createBlankStorySnapshot();
   const player = current.accounts.find((account) => account.id === PLAYER_ID)
     ?? fallback.accounts.find((account) => account.id === PLAYER_ID)!;

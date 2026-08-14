@@ -156,6 +156,16 @@ function writeEnvValue(source: string, key: string, value: string) {
   return pattern.test(source) ? source.replace(pattern, line) : `${source.trimEnd()}\n${line}\n`;
 }
 
+function writePrivateFileAtomic(file: string, content: string) {
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
 export async function saveRuntimeSettings(input: RuntimeSettings) {
   const parsed = RuntimeSettingsSchema.parse(input);
   const { apiKey, ...stored } = parsed;
@@ -168,7 +178,7 @@ export async function saveRuntimeSettings(input: RuntimeSettings) {
   envText = writeEnvValue(envText, "AIRP_API_BASE_URL", parsed.apiBaseUrl);
   envText = writeEnvValue(envText, "AIRP_API_KEY", apiKey);
   envText = writeEnvValue(envText, "AIRP_MODEL", parsed.model);
-  fs.writeFileSync(envPath, envText, "utf8");
+  writePrivateFileAtomic(envPath, envText);
   process.env.AIRP_API_KEY = apiKey;
   process.env.AIRP_API_BASE_URL = parsed.apiBaseUrl;
   process.env.AIRP_MODEL = parsed.model;

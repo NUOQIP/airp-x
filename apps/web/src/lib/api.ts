@@ -9,16 +9,25 @@ export class ApiError extends Error {
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body) headers.set("content-type", "application/json");
-  const response = await fetch(path, {
-    ...init,
-    headers
-  });
+  const timeoutSignal = AbortSignal.timeout(620_000);
+  const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+  let response: Response;
+  try {
+    response = await fetch(path, { ...init, headers, signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError("请求超时，请检查模型服务后重试", "REQUEST_TIMEOUT");
+    throw error;
+  }
   if (!response.ok) {
     let body: ApiErrorBody = { error: response.statusText, code: "HTTP_ERROR" };
     try { body = await response.json() as ApiErrorBody; } catch { /* no-op */ }
     throw new ApiError(body.error, body.code, body.details, response.status);
   }
-  return response.json() as Promise<T>;
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
+  if (!text.trim()) return undefined as T;
+  try { return JSON.parse(text) as T; }
+  catch { throw new ApiError("服务端返回了无法解析的数据", "INVALID_RESPONSE", undefined, response.status); }
 }
 
 export const apiClient = {

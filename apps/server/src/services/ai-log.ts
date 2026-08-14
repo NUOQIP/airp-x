@@ -32,6 +32,9 @@ const warningIntervalMs = 60_000;
 
 let writeQueue: Promise<void> = Promise.resolve();
 let lastWarningAt = Number.NEGATIVE_INFINITY;
+let lastCleanupDate: string | undefined;
+const activeFiles = new Map<string, string>();
+const knownFileSizes = new Map<string, number>();
 
 function dataUrlMarker(value: string, metadata: string) {
   const mimeMatch = /^([A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+)/.exec(metadata);
@@ -149,6 +152,55 @@ function logFileFor(timestamp: string) {
   return path.join(aiLogDirectory, `ai-${date}.jsonl`);
 }
 
+async function existingFileSize(file: string) {
+  const known = knownFileSizes.get(file);
+  if (known !== undefined) return known;
+  try {
+    const size = (await fs.stat(file)).size;
+    knownFileSizes.set(file, size);
+    return size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    knownFileSizes.set(file, 0);
+    return 0;
+  }
+}
+
+export function expiredAiLogFilenames(names: readonly string[], currentDate: string, retentionDays: number) {
+  const cutoff = Date.parse(`${currentDate}T00:00:00.000Z`) - Math.floor(retentionDays) * 86_400_000;
+  return names.filter((name) => {
+    const match = /^ai-(\d{4}-\d{2}-\d{2})(?:-\d+)?\.jsonl$/.exec(name);
+    return Boolean(match?.[1] && Date.parse(`${match[1]}T00:00:00.000Z`) < cutoff);
+  });
+}
+
+async function cleanupExpiredLogs(currentDate: string) {
+  if (lastCleanupDate === currentDate) return;
+  lastCleanupDate = currentDate;
+  const entries = await fs.readdir(aiLogDirectory, { withFileTypes: true });
+  const fileNames = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  for (const name of expiredAiLogFilenames(fileNames, currentDate, config.aiLogRetentionDays)) {
+    const file = path.join(aiLogDirectory, name);
+    await fs.unlink(file);
+    knownFileSizes.delete(file);
+  }
+}
+
+async function writableLogFile(timestamp: string, bytes: number) {
+  const date = /^\d{4}-\d{2}-\d{2}/.exec(timestamp)?.[0] ?? new Date().toISOString().slice(0, 10);
+  let file = activeFiles.get(date) ?? logFileFor(timestamp);
+  let part = file === logFileFor(timestamp) ? 1 : Number(/-(\d+)\.jsonl$/.exec(file)?.[1] ?? 1);
+  while (true) {
+    const size = await existingFileSize(file);
+    if (size === 0 || size + bytes <= config.aiLogMaxFileBytes) {
+      activeFiles.set(date, file);
+      return { file, size };
+    }
+    part += 1;
+    file = path.join(aiLogDirectory, `ai-${date}-${part}.jsonl`);
+  }
+}
+
 function enqueueRecord(record: unknown, timestamp: string, secrets: readonly string[]) {
   let line: string;
   try {
@@ -158,11 +210,14 @@ function enqueueRecord(record: unknown, timestamp: string, secrets: readonly str
     return;
   }
 
-  const file = logFileFor(timestamp);
   writeQueue = writeQueue.then(async () => {
     try {
       await fs.mkdir(aiLogDirectory, { recursive: true });
+      await cleanupExpiredLogs(/^\d{4}-\d{2}-\d{2}/.exec(timestamp)?.[0] ?? new Date().toISOString().slice(0, 10));
+      const bytes = Buffer.byteLength(line, "utf8");
+      const { file, size } = await writableLogFile(timestamp, bytes);
       await fs.appendFile(file, line, "utf8");
+      knownFileSizes.set(file, size + bytes);
     } catch (error) {
       warnAboutLoggingFailure(error, secrets);
     }
@@ -214,8 +269,8 @@ function successSummary(details: unknown) {
   const message = detailRecord(record.message) ?? detailRecord(firstChoice?.message);
   const status = record.status ?? record.providerStatus ?? record.statusCode ?? http?.status;
   const usage = usageSummary(record.usage ?? providerResponse?.usage);
-  const contentLength = stringLength(record.content ?? message?.content);
-  const reasoningLength = stringLength(record.reasoning ?? record.reasoning_content ?? message?.reasoning_content);
+  const contentLength = typeof record.contentLength === "number" ? record.contentLength : stringLength(record.content ?? message?.content);
+  const reasoningLength = typeof record.reasoningLength === "number" ? record.reasoningLength : stringLength(record.reasoning ?? record.reasoning_content ?? message?.reasoning_content);
   return [
     typeof record.phase === "string" ? `phase=${record.phase}` : undefined,
     status !== undefined ? `status=${String(status)}` : undefined,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, like } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type {
   AppSnapshot,
@@ -8,6 +8,7 @@ import type {
   TurnAccepted,
   TurnSummary
 } from "@airp/shared";
+import { LocalActionSchema, StorySnapshotSchema } from "@airp/shared";
 import { db } from "../db/client.js";
 import {
   branches,
@@ -24,8 +25,14 @@ import { assembleContext } from "./context-service.js";
 import { applyAiOutput, validateRuleConstraints } from "./story-engine.js";
 import { applyOutputRegex } from "./regex-service.js";
 import { synchronizeDerivedProfileStats } from "./snapshot-normalizer.js";
+import { withBranchLock } from "./branch-lock.js";
+import { trimRollingSummary } from "./memory-service.js";
+import { applyLocalActionState } from "./local-action-state.js";
+import { conflict, notFound } from "./http-error.js";
 
-const parseStory = (json: string) => synchronizeDerivedProfileStats(JSON.parse(json) as StorySnapshot);
+const parseStory = (json: string) => synchronizeDerivedProfileStats(
+  StorySnapshotSchema.parse(JSON.parse(json)) as StorySnapshot
+);
 const stamp = () => new Date().toISOString();
 
 function inputFromTurn(turn: typeof turns.$inferSelect): PlayerTurnInput {
@@ -38,7 +45,7 @@ function inputFromTurn(turn: typeof turns.$inferSelect): PlayerTurnInput {
       text: turn.inputText
     };
   }
-  if (turn.inputKind === "seed") throw new Error("初始化回合不能作为玩家输入生成");
+  if (turn.inputKind === "seed") throw conflict("初始化回合不能作为玩家输入生成");
   return {
     kind: turn.inputKind,
     branchId: turn.branchId,
@@ -53,8 +60,8 @@ function appendPlayerRecord(base: StorySnapshot, input: PlayerTurnInput, recordI
   const createdAt = next.mvu.storyTime;
   if (input.kind === "comment") {
     const post = next.posts.find((item) => item.id === input.postId);
-    if (!post || post.moderation === "deleted") throw new Error("无法评论不存在或已删除的帖文");
-    if (input.parentCommentId && !next.comments.some((item) => item.id === input.parentCommentId && item.postId === input.postId)) throw new Error("回复目标不存在");
+    if (!post || post.moderation === "deleted") throw notFound("无法评论不存在或已删除的帖文", "POST_NOT_FOUND");
+    if (input.parentCommentId && !next.comments.some((item) => item.id === input.parentCommentId && item.postId === input.postId)) throw notFound("回复目标不存在", "COMMENT_NOT_FOUND");
     next.comments.push({
       id: recordId,
       postId: input.postId,
@@ -68,9 +75,10 @@ function appendPlayerRecord(base: StorySnapshot, input: PlayerTurnInput, recordI
     post.metrics.replies += 1;
   } else {
     const thread = next.threads.find((item) => item.id === input.threadId);
-    if (!thread || !thread.playerCanSend || !thread.participantIds.includes(PLAYER_ID)) throw new Error("玩家不能在该会话中发送消息");
-    if (input.kind !== thread.kind) throw new Error("会话类型不匹配");
-    if (input.replyToMessageId && !next.messages.some((item) => item.id === input.replyToMessageId && item.threadId === input.threadId)) throw new Error("回复消息不存在");
+    if (!thread) throw notFound("私信会话不存在", "THREAD_NOT_FOUND");
+    if (!thread.playerCanSend || !thread.participantIds.includes(PLAYER_ID)) throw conflict("玩家不能在该会话中发送消息", "THREAD_READ_ONLY");
+    if (input.kind !== thread.kind) throw conflict("会话类型不匹配", "THREAD_KIND_MISMATCH");
+    if (input.replyToMessageId && !next.messages.some((item) => item.id === input.replyToMessageId && item.threadId === input.threadId)) throw notFound("回复消息不存在", "MESSAGE_NOT_FOUND");
     next.messages.push({
       id: recordId,
       threadId: input.threadId,
@@ -97,7 +105,7 @@ export async function getAppSnapshot(branchId?: string): Promise<AppSnapshot> {
   const activeSessionSetting = (await db.select().from(settings).where(eq(settings.key, "active_session_id")).limit(1))[0];
   const sessionId = requestedBranch?.sessionId ?? activeSessionSetting?.value ?? SESSION_ID;
   const session = allSessions.find((item) => item.id === sessionId) ?? allSessions[0];
-  if (!session) throw new Error("主会话不存在");
+  if (!session) throw notFound("主会话不存在", "SESSION_NOT_FOUND");
   const activeBranchId = branchId ?? session.activeBranchId;
   const [branchRows, activeRows, turnRows] = await Promise.all([
     db.select().from(branches).where(eq(branches.sessionId, session.id)).orderBy(desc(branches.updatedAt)),
@@ -105,15 +113,13 @@ export async function getAppSnapshot(branchId?: string): Promise<AppSnapshot> {
     db.select().from(turns).where(eq(turns.branchId, activeBranchId)).orderBy(asc(turns.sequence))
   ]);
   const active = activeRows[0];
-  if (!active) throw new Error("分支不存在");
+  if (!active) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const candidateRows = turnRows.length
-    ? await db.select().from(turnCandidates).where(eq(turnCandidates.turnId, turnRows.at(-1)!.id)).orderBy(asc(turnCandidates.createdAt))
+    ? await db.select().from(turnCandidates).where(inArray(turnCandidates.turnId, turnRows.map((turn) => turn.id))).orderBy(asc(turnCandidates.createdAt))
     : [];
   const candidateByTurn = new Map<string, typeof candidateRows>();
-  for (const turn of turnRows) {
-    if (turn.id === turnRows.at(-1)?.id) candidateByTurn.set(turn.id, candidateRows);
-    else candidateByTurn.set(turn.id, await db.select().from(turnCandidates).where(eq(turnCandidates.turnId, turn.id)).orderBy(asc(turnCandidates.createdAt)));
-  }
+  for (const turn of turnRows) candidateByTurn.set(turn.id, []);
+  for (const candidate of candidateRows) candidateByTurn.get(candidate.turnId)?.push(candidate);
   const story = parseStory(active.currentSnapshotJson);
   const avatarTextPrefix = `avatar_text:${session.id}:`;
   const avatarUrlPrefix = `avatar_url:${session.id}:`;
@@ -174,7 +180,7 @@ export async function getAppSnapshot(branchId?: string): Promise<AppSnapshot> {
 
 async function persistPlayerInput(input: PlayerTurnInput) {
   const branch = (await db.select().from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const base = parseStory(branch.currentSnapshotJson);
   const recordId = nanoid();
   const inputStory = appendPlayerRecord(base, input, recordId);
@@ -204,15 +210,19 @@ async function persistPlayerInput(input: PlayerTurnInput) {
 
 async function generateForTurn(turnId: string, regeneration: boolean): Promise<TurnAccepted> {
   const turn = (await db.select().from(turns).where(eq(turns.id, turnId)).limit(1))[0];
-  if (!turn) throw new Error("回合不存在");
+  if (!turn) throw notFound("回合不存在", "TURN_NOT_FOUND");
   const branch = (await db.select().from(branches).where(eq(branches.id, turn.branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const latestSequence = (await db.select({ sequence: turns.sequence }).from(turns).where(eq(turns.branchId, turn.branchId)).orderBy(desc(turns.sequence)).limit(1))[0]?.sequence;
-  if (latestSequence !== turn.sequence) throw new Error("只能在最新回合重试或重新生成；编辑旧回合请创建分支");
+  if (latestSequence !== turn.sequence) throw conflict("只能在最新回合重试或重新生成；编辑旧回合请创建分支", "TURN_NOT_LATEST");
   const input = inputFromTurn(turn);
   const inputStory = regeneration
     ? appendPlayerRecord(parseStory(turn.baseSnapshotJson), input, turn.inputRecordId)
     : parseStory(branch.currentSnapshotJson);
+  if (regeneration) {
+    const pending = await db.select().from(localActions).where(and(eq(localActions.branchId, branch.id), isNull(localActions.consumedAt))).orderBy(asc(localActions.createdAt));
+    for (const action of pending) applyLocalActionState(inputStory, LocalActionSchema.parse(JSON.parse(action.valueJson)));
+  }
   try {
     const previousCheckpoint = regeneration
       ? (await db.select().from(checkpoints).where(and(eq(checkpoints.branchId, branch.id), eq(checkpoints.sequence, Math.max(0, turn.sequence - 1)))).limit(1))[0]
@@ -227,9 +237,9 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
     const nextStory = applyAiOutput(inputStory, output);
     const candidateId = nanoid();
     const now = stamp();
-    const summary = output.memoryNote
-      ? `${baseSummary}\n${output.storyTime}：${output.memoryNote}`.trim().slice(-12_000)
-      : baseSummary;
+    const summary = trimRollingSummary(output.memoryNote
+      ? `${baseSummary}\n${output.storyTime}：${output.memoryNote}`
+      : baseSummary, context.settings.summaryTargetWords);
     db.transaction((tx) => {
       tx.update(turnCandidates).set({ active: false }).where(eq(turnCandidates.turnId, turn.id)).run();
       tx.insert(turnCandidates).values({ id: candidateId, turnId: turn.id, outputJson: JSON.stringify(output), snapshotJson: JSON.stringify(nextStory), summaryText: summary, active: true, createdAt: now }).run();
@@ -250,67 +260,82 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
 }
 
 export async function submitTurn(input: PlayerTurnInput) {
-  const turnId = await persistPlayerInput(input);
-  return generateForTurn(turnId, false);
+  return withBranchLock(input.branchId, async () => {
+    const turnId = await persistPlayerInput(input);
+    try {
+      return await generateForTurn(turnId, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db.update(turns).set({ status: "failed", error: message, updatedAt: stamp() }).where(eq(turns.id, turnId));
+      throw error;
+    }
+  });
 }
 
 export async function retryTurn(turnId: string) {
   const turn = (await db.select().from(turns).where(eq(turns.id, turnId)).limit(1))[0];
-  if (!turn || turn.status !== "failed") throw new Error("只有失败的最新回合可以重试");
-  await db.update(turns).set({ status: "pending", error: null, updatedAt: stamp() }).where(eq(turns.id, turnId));
-  return generateForTurn(turnId, false);
+  if (!turn) throw notFound("回合不存在", "TURN_NOT_FOUND");
+  if (turn.status !== "failed") throw conflict("只有失败的最新回合可以重试", "TURN_NOT_FAILED");
+  return withBranchLock(turn.branchId, async () => {
+    const current = (await db.select().from(turns).where(eq(turns.id, turnId)).limit(1))[0];
+    if (!current || current.status !== "failed") throw conflict("只有失败的最新回合可以重试", "TURN_NOT_FAILED");
+    await db.update(turns).set({ status: "pending", error: null, updatedAt: stamp() }).where(eq(turns.id, turnId));
+    try {
+      return await generateForTurn(turnId, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db.update(turns).set({ status: "failed", error: message, updatedAt: stamp() }).where(eq(turns.id, turnId));
+      throw error;
+    }
+  });
 }
 
 export async function regenerateTurn(turnId: string) {
   const turn = (await db.select().from(turns).where(eq(turns.id, turnId)).limit(1))[0];
-  if (!turn || turn.status !== "complete") throw new Error("只有已完成的最新回合可以重新生成");
-  return generateForTurn(turnId, true);
+  if (!turn) throw notFound("回合不存在", "TURN_NOT_FOUND");
+  if (turn.status !== "complete") throw conflict("只有已完成的最新回合可以重新生成", "TURN_NOT_COMPLETE");
+  return withBranchLock(turn.branchId, async () => {
+    try {
+      return await generateForTurn(turnId, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await db.update(turns).set({ error: `重新生成失败：${message}`, updatedAt: stamp() }).where(eq(turns.id, turnId));
+      throw error;
+    }
+  });
 }
 
 export async function selectCandidate(candidateId: string) {
   const candidate = (await db.select().from(turnCandidates).where(eq(turnCandidates.id, candidateId)).limit(1))[0];
-  if (!candidate) throw new Error("候选结果不存在");
+  if (!candidate) throw notFound("候选结果不存在", "CANDIDATE_NOT_FOUND");
   const turn = (await db.select().from(turns).where(eq(turns.id, candidate.turnId)).limit(1))[0];
-  if (!turn) throw new Error("候选结果所属回合不存在");
-  const latest = (await db.select({ id: turns.id }).from(turns).where(eq(turns.branchId, turn.branchId)).orderBy(desc(turns.sequence)).limit(1))[0];
-  if (latest?.id !== turn.id) throw new Error("只能切换最新回合的候选结果");
-  const now = stamp();
-  db.transaction((tx) => {
-    tx.update(turnCandidates).set({ active: false }).where(eq(turnCandidates.turnId, turn.id)).run();
-    tx.update(turnCandidates).set({ active: true }).where(eq(turnCandidates.id, candidate.id)).run();
-    tx.update(branches).set({ currentSnapshotJson: candidate.snapshotJson, rollingSummary: candidate.summaryText, updatedAt: now }).where(eq(branches.id, turn.branchId)).run();
-    tx.update(checkpoints).set({ snapshotJson: candidate.snapshotJson, summaryText: candidate.summaryText, createdAt: now }).where(and(eq(checkpoints.branchId, turn.branchId), eq(checkpoints.sequence, turn.sequence))).run();
+  if (!turn) throw notFound("候选结果所属回合不存在", "TURN_NOT_FOUND");
+  return withBranchLock(turn.branchId, async () => {
+    const latest = (await db.select({ id: turns.id }).from(turns).where(eq(turns.branchId, turn.branchId)).orderBy(desc(turns.sequence)).limit(1))[0];
+    if (latest?.id !== turn.id) throw conflict("只能切换最新回合的候选结果", "TURN_NOT_LATEST");
+    const now = stamp();
+    const selectedStory = parseStory(candidate.snapshotJson);
+    const pending = await db.select().from(localActions).where(and(eq(localActions.branchId, turn.branchId), isNull(localActions.consumedAt))).orderBy(asc(localActions.createdAt));
+    for (const action of pending) applyLocalActionState(selectedStory, LocalActionSchema.parse(JSON.parse(action.valueJson)));
+    const selectedSnapshotJson = JSON.stringify(selectedStory);
+    db.transaction((tx) => {
+      tx.update(turnCandidates).set({ active: false }).where(eq(turnCandidates.turnId, turn.id)).run();
+      tx.update(turnCandidates).set({ active: true }).where(eq(turnCandidates.id, candidate.id)).run();
+      tx.update(branches).set({ currentSnapshotJson: selectedSnapshotJson, rollingSummary: candidate.summaryText, updatedAt: now }).where(eq(branches.id, turn.branchId)).run();
+      tx.update(checkpoints).set({ snapshotJson: selectedSnapshotJson, summaryText: candidate.summaryText, createdAt: now }).where(and(eq(checkpoints.branchId, turn.branchId), eq(checkpoints.sequence, turn.sequence))).run();
+    });
+    return getAppSnapshot(turn.branchId);
   });
-  return getAppSnapshot(turn.branchId);
 }
 
 export async function applyLocalAction(input: LocalAction) {
+  return withBranchLock(input.branchId, () => applyLocalActionUnlocked(input));
+}
+
+async function applyLocalActionUnlocked(input: LocalAction) {
   const branch = (await db.select().from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
-  const story = parseStory(branch.currentSnapshotJson);
-  const flags = story.mvu.platform.flags;
-  const key = `${input.kind}:${"postId" in input ? input.postId : "accountId" in input ? input.accountId : ""}`;
-  if (input.kind === "like" || input.kind === "repost" || input.kind === "bookmark") {
-    const post = story.posts.find((item) => item.id === input.postId);
-    if (!post) throw new Error("帖文不存在");
-    const previous = flags[key] === true;
-    if (previous !== input.active) {
-      const metric = input.kind === "like" ? "likes" : input.kind === "repost" ? "reposts" : "bookmarks";
-      post.metrics[metric] = Math.max(0, post.metrics[metric] + (input.active ? 1 : -1));
-    }
-    flags[key] = input.active;
-  } else if (input.kind === "follow") {
-    flags[key] = input.active;
-  } else {
-    const post = story.posts.find((item) => item.id === input.postId);
-    if (!post?.poll || post.poll.closed) throw new Error("投票不存在或已经结束");
-    if (post.poll.playerChoiceId) throw new Error("玩家已经投过票");
-    const option = post.poll.options.find((item) => item.id === input.optionId);
-    if (!option) throw new Error("投票选项不存在");
-    option.votes += 1;
-    post.poll.playerChoiceId = input.optionId;
-  }
-  story.mvu.revision += 1;
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
+  const story = applyLocalActionState(parseStory(branch.currentSnapshotJson), input);
   const now = stamp();
   const targetId = "postId" in input ? input.postId : input.accountId;
   db.transaction((tx) => {
@@ -320,9 +345,18 @@ export async function applyLocalAction(input: LocalAction) {
   return getAppSnapshot(branch.id);
 }
 
+export async function recoverInterruptedTurns() {
+  const now = stamp();
+  await db.update(turns).set({
+    status: "failed",
+    error: "服务在生成过程中中断；玩家输入已保留，请重试此回合。",
+    updatedAt: now
+  }).where(eq(turns.status, "pending"));
+}
+
 export async function activateBranch(branchId: string) {
   const branch = (await db.select().from(branches).where(eq(branches.id, branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const now = stamp();
   db.transaction((tx) => {
     tx.update(sessions).set({ activeBranchId: branchId, updatedAt: now }).where(eq(sessions.id, branch.sessionId)).run();
@@ -347,7 +381,7 @@ export async function createSession(name: string) {
 
 export async function activateSession(sessionId: string) {
   const session = (await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1))[0];
-  if (!session) throw new Error("会话不存在");
+  if (!session) throw notFound("会话不存在", "SESSION_NOT_FOUND");
   const now = stamp();
   await db.insert(settings).values({ key: "active_session_id", value: sessionId, updatedAt: now }).onConflictDoUpdate({ target: settings.key, set: { value: sessionId, updatedAt: now } });
   return getAppSnapshot(session.activeBranchId);
@@ -355,9 +389,9 @@ export async function activateSession(sessionId: string) {
 
 export async function updateAvatar(branchId: string, accountId: string, avatarText: string, avatarUrl: string) {
   const branch = (await db.select().from(branches).where(eq(branches.id, branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const story = parseStory(branch.currentSnapshotJson);
-  if (!story.accounts.some((account) => account.id === accountId)) throw new Error("账号不存在");
+  if (!story.accounts.some((account) => account.id === accountId)) throw notFound("账号不存在", "ACCOUNT_NOT_FOUND");
   const textKey = `avatar_text:${branch.sessionId}:${accountId}`;
   const urlKey = `avatar_url:${branch.sessionId}:${accountId}`;
   const now = stamp();
@@ -376,7 +410,7 @@ export async function updateAvatar(branchId: string, accountId: string, avatarTe
 
 export async function updateProfileBanner(branchId: string, bannerTone: "" | StorySnapshot["profile"]["bannerTone"], bannerUrl: string) {
   const branch = (await db.select().from(branches).where(eq(branches.id, branchId)).limit(1))[0];
-  if (!branch) throw new Error("分支不存在");
+  if (!branch) throw notFound("分支不存在", "BRANCH_NOT_FOUND");
   const toneKey = `profile_banner_tone:${branch.sessionId}`;
   const urlKey = `profile_banner_url:${branch.sessionId}`;
   const now = stamp();
@@ -395,9 +429,9 @@ export async function updateProfileBanner(branchId: string, bannerTone: "" | Sto
 
 export async function forkFromTurn(turnId: string, text: string) {
   const original = (await db.select().from(turns).where(eq(turns.id, turnId)).limit(1))[0];
-  if (!original) throw new Error("原回合不存在");
+  if (!original) throw notFound("原回合不存在", "TURN_NOT_FOUND");
   const parent = (await db.select().from(branches).where(eq(branches.id, original.branchId)).limit(1))[0];
-  if (!parent) throw new Error("原分支不存在");
+  if (!parent) throw notFound("原分支不存在", "BRANCH_NOT_FOUND");
   const branchId = nanoid();
   const now = stamp();
   const parentCheckpoint = (await db.select().from(checkpoints).where(and(eq(checkpoints.branchId, parent.id), eq(checkpoints.sequence, Math.max(0, original.sequence - 1)))).limit(1))[0];

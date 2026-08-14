@@ -56,8 +56,10 @@ function setAtPath(root: Record<string, unknown>, path: string, operation: "set"
   const key = parts.at(-1)!;
   if (operation === "set") current[key] = value;
   if (operation === "increment") {
-    if (typeof current[key] !== "number" || typeof value !== "number") throw new Error(`MVU increment requires a number: ${path}`);
-    current[key] = current[key] + value;
+    if (typeof value !== "number") throw new Error(`MVU increment requires a numeric value: ${path}`);
+    const existing = current[key];
+    if (existing !== undefined && typeof existing !== "number") throw new Error(`MVU increment requires a number: ${path}`);
+    current[key] = (existing ?? 0) + value;
   }
   if (operation === "append") {
     if (!Array.isArray(current[key])) current[key] = [];

@@ -17,7 +17,7 @@ export function Verified() {
 }
 
 export function Spinner({ label = "正在生成剧情" }: { label?: string }) {
-  return <div className="flex items-center gap-2 text-sm text-muted"><LoaderCircle className="animate-spin" size={17} /><span>{label}</span></div>;
+  return <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted"><LoaderCircle className="animate-spin" size={17} /><span>{label}</span></div>;
 }
 
 export function Empty({ title, detail }: { title: string; detail: string }) {
@@ -29,7 +29,7 @@ export function Modal({ open, onOpenChange, title, children, footer }: PropsWith
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
       <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[88vh] w-[720px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4"><Dialog.Title className="text-xl font-extrabold">{title}</Dialog.Title><Dialog.Close className="x-icon-button"><X size={20} /></Dialog.Close></div>
+        <div className="flex items-center justify-between border-b border-line px-5 py-4"><Dialog.Title className="text-xl font-extrabold">{title}</Dialog.Title><Dialog.Close aria-label="关闭" className="x-icon-button"><X size={20} /></Dialog.Close></div>
         <div className="max-h-[70vh] overflow-y-auto p-5">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-line px-5 py-4">{footer}</div>}
       </Dialog.Content>

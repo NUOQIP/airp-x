@@ -1,10 +1,11 @@
-import { and, asc, desc, eq } from "drizzle-orm";
-import type { PlayerTurnInput, PromptPresetItem, PromptStackMarker, StorySnapshot, WorldbookEntry } from "@airp/shared";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { AiTurnOutputSchema, type PlayerTurnInput, type PromptPresetItem, type PromptStackMarker, type StorySnapshot, type WorldbookEntry } from "@airp/shared";
 import { db } from "../db/client.js";
-import { branches, promptBlocks, roleCards, rulePresets, turns, userMacros, worldbookEntries, worldbooks } from "../db/schema.js";
+import { branches, localActions, promptBlocks, roleCards, rulePresets, turnCandidates, turns, userMacros, worldbookEntries, worldbooks } from "../db/schema.js";
 import { getPromptPresetState, getRuntimeSettings } from "./config-service.js";
 import { stringifyContextValue } from "./context-sanitizer.js";
 import { parseRuleConfig } from "./rule-config.js";
+import { buildWorldbookScanText, selectWorldbookBudget, worldbookScopeEnabled } from "./context-policy.js";
 
 export interface PromptMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ContextBreakdown { label: string; estimatedTokens: number; mandatory: boolean }
@@ -51,7 +52,7 @@ function renderMacros(content: string, values: Record<string, string>) {
 
 export async function assembleContext(branchId: string, input: PlayerTurnInput, snapshot: StorySnapshot, rollingSummaryOverride?: string) {
   const runtime = await getRuntimeSettings();
-  const [branchRows, cards, prompts, rules, books, entries, recentTurns, macroRows] = await Promise.all([
+  const [branchRows, cards, prompts, rules, books, entries, recentTurns, macroRows, pendingActionRows] = await Promise.all([
     db.select().from(branches).where(eq(branches.id, branchId)).limit(1),
     db.select().from(roleCards).where(eq(roleCards.active, true)),
     db.select().from(promptBlocks).orderBy(asc(promptBlocks.sortOrder)),
@@ -59,7 +60,8 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     db.select().from(worldbooks).where(eq(worldbooks.enabled, true)),
     db.select().from(worldbookEntries).where(eq(worldbookEntries.enabled, true)).orderBy(asc(worldbookEntries.sortOrder)),
     db.select().from(turns).where(and(eq(turns.branchId, branchId), eq(turns.status, "complete"))).orderBy(desc(turns.sequence)).limit(runtime.recentHistoryMessages),
-    db.select().from(userMacros).where(eq(userMacros.enabled, true))
+    db.select().from(userMacros).where(eq(userMacros.enabled, true)),
+    db.select().from(localActions).where(and(eq(localActions.branchId, branchId), isNull(localActions.consumedAt))).orderBy(asc(localActions.createdAt))
   ]);
   const branch = branchRows[0];
   const rule = rules[0];
@@ -101,6 +103,14 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   delete contextMvu.extensions.homepageSource;
   if (markerEnabled("mvu_state")) mandatory.push({ label: "MVU 状态", message: { role: "system", content: `# 当前 MVU 状态\n${stringifyContextValue(contextMvu)}` } });
   if (markerEnabled("profile_state")) mandatory.push({ label: "主页状态", message: { role: "system", content: `# 当前主页结构化状态\n${stringifyContextValue(snapshot.profile)}` } });
+  if (pendingActionRows.length > 0) {
+    const latestByTarget = new Map<string, unknown>();
+    for (const action of pendingActionRows) {
+      try { latestByTarget.set(`${action.kind}:${action.targetId}`, JSON.parse(action.valueJson)); }
+      catch { latestByTarget.set(`${action.kind}:${action.targetId}`, { kind: action.kind, targetId: action.targetId }); }
+    }
+    mandatory.push({ label: "待消费本地操作", message: { role: "system", content: `# 玩家在平台上已执行、但尚未被剧情消费的操作\n${stringifyContextValue([...latestByTarget.values()])}` } });
+  }
 
   const breakdown: ContextBreakdown[] = [...mandatory, ...inChatPromptMessages].map((item) => ({ label: item.label, estimatedTokens: estimateTokens(item.message.content), mandatory: true }));
   breakdown.push({ label: "当前玩家输入", estimatedTokens: estimateTokens(input.text), mandatory: true });
@@ -108,16 +118,35 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const mandatoryTotal = breakdown.reduce((sum, item) => sum + item.estimatedTokens, 0);
   if (mandatoryTotal > availableTokens) throw new ContextBudgetError(breakdown, availableTokens);
 
-  const historyText = [...recentTurns].reverse().map((turn) => `[${turn.inputKind}] ${turn.inputText}`).join("\n");
-  const platformText = [
-    ...snapshot.posts.slice(-20).map((post) => post.text),
-    ...snapshot.comments.slice(-40).map((comment) => comment.text),
-    ...snapshot.messages.slice(-40).map((message) => message.text),
-    historyText,
-    input.text
-  ].join("\n");
+  const recentCandidateRows = recentTurns.length
+    ? await db.select().from(turnCandidates).where(and(eq(turnCandidates.active, true), inArray(turnCandidates.turnId, recentTurns.map((turn) => turn.id))))
+    : [];
+  const activeCandidateByTurn = new Map(recentCandidateRows.map((candidate) => [candidate.turnId, candidate]));
+  const orderedRecentTurns = [...recentTurns].reverse();
+  const historyLines = orderedRecentTurns.flatMap((turn) => {
+    const lines = [`[玩家/${turn.inputKind}] ${turn.inputText}`];
+    const candidate = activeCandidateByTurn.get(turn.id);
+    if (!candidate) return lines;
+    try {
+      const output = AiTurnOutputSchema.parse(JSON.parse(candidate.outputJson));
+      lines.push(`[AI/${output.storyTime}] ${output.memoryNote ?? `完成 ${output.events.length} 个平台事件`}`);
+    } catch { /* A damaged historical candidate is omitted instead of breaking new turns. */ }
+    return lines;
+  });
+  const historyText = historyLines.join("\n");
+  const scanSources = {
+    posts: snapshot.posts.map((post) => post.text),
+    comments: snapshot.comments.map((comment) => comment.text),
+    messages: snapshot.messages.map((message) => message.text),
+    history: historyLines,
+    currentInput: input.text
+  };
 
-  const bookIds = new Set(books.map((book) => book.id));
+  const scopedBooks = books.filter((book) => worldbookScopeEnabled(book.scope, {
+    playerCard: markerEnabled("player_card"),
+    heroineCard: markerEnabled("heroine_card")
+  }));
+  const bookIds = new Set(scopedBooks.map((book) => book.id));
   const mappedEntries: WorldbookEntry[] = entries.filter((entry) => bookIds.has(entry.bookId)).map((entry) => ({
     id: entry.id,
     bookId: entry.bookId,
@@ -140,14 +169,15 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     injectionDepth: entry.injectionDepth
   }));
   const activated: WorldbookEntry[] = [];
-  let recursiveText = platformText;
+  const recursiveContent: string[] = [];
   for (let pass = 0; pass < 3; pass += 1) {
     let added = false;
     for (const entry of mappedEntries) {
       if (activated.some((active) => active.id === entry.id)) continue;
-      if (!entryMatches(entry, recursiveText) || !deterministicChance(entry, snapshot.mvu.revision)) continue;
+      const scanText = buildWorldbookScanText(entry.scanDepth, scanSources, recursiveContent);
+      if (!entryMatches(entry, scanText) || !deterministicChance(entry, snapshot.mvu.revision)) continue;
       activated.push(entry);
-      if (entry.recursive) recursiveText += `\n${entry.content}`;
+      if (entry.recursive) recursiveContent.push(entry.content);
       added = true;
     }
     if (!added) break;
@@ -162,17 +192,29 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
           : position === "author_note_top" ? "worldbook_author_note_top"
             : position === "author_note_bottom" ? "worldbook_author_note_bottom"
               : "worldbook_at_depth");
-  for (const entry of activated.sort((a, b) => a.order - b.order)) {
-    if (!worldbookPositionEnabled(entry.position)) continue;
-    const tokenCost = estimateTokens(entry.content);
-    const book = books.find((item) => item.id === entry.bookId);
-    const budget = Math.floor(availableTokens * ((book?.tokenBudgetPercent ?? 25) / 100));
-    const currentWorldbookTokens = worldbookMessages.reduce((sum, item) => sum + estimateTokens(item.message.content), 0);
-    if (!entry.ignoreBudget && currentWorldbookTokens + tokenCost > budget) continue;
-    worldbookMessages.push({ entry, message: { role: entry.role, content: `# 世界书：${entry.title}\n${entry.content}` } });
-    breakdown.push({ label: `世界书：${entry.title}`, estimatedTokens: tokenCost, mandatory: entry.ignoreBudget });
-    usedTokens += tokenCost;
+  const eligibleWorldbookMessages = activated.sort((a, b) => a.order - b.order).flatMap((entry) => {
+    if (!worldbookPositionEnabled(entry.position)) return [];
+    const message: PromptMessage = { role: entry.role, content: `# 世界书：${entry.title}\n${entry.content}` };
+    return [{ entry, message, tokenCost: estimateTokens(message.content) }];
+  });
+  const budgetSelection = selectWorldbookBudget(eligibleWorldbookMessages.map(({ entry, tokenCost }) => ({
+    id: entry.id,
+    bookId: entry.bookId,
+    tokenCost,
+    ignoreBookBudget: entry.ignoreBudget,
+    bookBudgetPercent: scopedBooks.find((book) => book.id === entry.bookId)?.tokenBudgetPercent ?? 25
+  })), availableTokens, usedTokens);
+  if (budgetSelection.mandatoryOverflowId) {
+    const overflow = eligibleWorldbookMessages.find(({ entry }) => entry.id === budgetSelection.mandatoryOverflowId)!;
+    throw new ContextBudgetError([...breakdown, { label: `世界书：${overflow.entry.title}`, estimatedTokens: overflow.tokenCost, mandatory: true }], availableTokens);
   }
+  const selectedWorldbookIds = new Set(budgetSelection.selectedIds);
+  for (const item of eligibleWorldbookMessages) {
+    if (!selectedWorldbookIds.has(item.entry.id)) continue;
+    worldbookMessages.push({ entry: item.entry, message: item.message });
+    breakdown.push({ label: `世界书：${item.entry.title}`, estimatedTokens: item.tokenCost, mandatory: item.entry.ignoreBudget });
+  }
+  usedTokens = budgetSelection.usedTokens;
 
   const optional: PromptMessage[] = [];
   const rollingSummary = rollingSummaryOverride ?? branch.rollingSummary;
@@ -224,6 +266,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
                                 : item.marker === "current_input" ? [currentInput]
                                   : [];
     stackMessages.push(...messages);
+  }
+  const pendingActionMessage = byLabel("待消费本地操作");
+  if (pendingActionMessage) {
+    const currentInputIndex = stackMessages.indexOf(currentInput);
+    stackMessages.splice(currentInputIndex < 0 ? stackMessages.length : currentInputIndex, 0, pendingActionMessage);
   }
   if (!stackMessages.includes(currentInput)) stackMessages.push(currentInput);
   const atDepthMarkerOrder = activePromptPreset.items.findIndex((item) => item.kind === "marker" && item.marker === "worldbook_at_depth");
