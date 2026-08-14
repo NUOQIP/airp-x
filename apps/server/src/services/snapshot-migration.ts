@@ -1,4 +1,5 @@
 import { StorySnapshotSchema, type ProfileSection, type ProfileSectionItem, type StorySnapshot } from "@airp/shared";
+import { ensureAudiencePool } from "./audience-pool.js";
 import { storyTimeMinusDays, synchronizeDerivedState } from "./state-derived-service.js";
 
 type RawRecord = Record<string, unknown>;
@@ -155,7 +156,7 @@ function ensureLiveSection(snapshot: StorySnapshot) {
     }
   }
   if (!section.items.some((current) => current.id === "cycle-phase")) section.items.push(item("cycle-phase", "当前周期", "computed", "derived", "cycle.phase"));
-  if (!section.items.some((current) => current.id === "cycle-next-change")) section.items.push(item("cycle-next-change", "下次阶段变化", "computed", "derived", "cycle.nextChangeAt"));
+  section.items = section.items.filter((current) => current.id !== "cycle-next-change" && current.source.path !== "cycle.nextChangeAt");
 }
 
 function migrateStatisticsSection(snapshot: StorySnapshot) {
@@ -260,7 +261,7 @@ export function migrateStorySnapshotV2(value: unknown): StorySnapshot {
   for (const post of parsed.posts) post.pinned = false;
   preciseSectionMigration(parsed, hadFanGoals);
   for (const trend of parsed.trends) if (trend.updatedAt === "2026-01-01T00:00+08:00") trend.updatedAt = parsed.mvu.storyTime;
-  return synchronizeDerivedState(parsed);
+  return synchronizeDerivedState(ensureAudiencePool(parsed));
 }
 
 export function migrateStorySnapshotJson(value: string) {

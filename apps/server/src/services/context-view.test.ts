@@ -45,6 +45,7 @@ describe("context view", () => {
           items: [
             { id: "dynamic", value: "duplicate cache", emphasis: "normal", permission: "temporary", origin: "initial", source: { kind: "mvu", path: "heroine.status" } },
             { id: "computed", value: "duplicate computed", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "cycle.phase" } },
+            { id: "cycle-next-change", value: "internal cycle time", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "cycle.nextChangeAt" } },
             { id: "daily-reset", value: "internal time", emphasis: "normal", permission: "computed", origin: "initial", source: { kind: "derived", path: "statistics.nextDailyResetAt" } },
             { id: "literal", value: "fixed fact", emphasis: "normal", permission: "locked", origin: "initial", source: { kind: "literal", path: "profile.sections.section.items.literal.value" } },
             { id: "history", value: "old event", emphasis: "normal", permission: "append_only", origin: "initial", source: { kind: "event_log", path: "profile.sections.section.items" } }
@@ -57,6 +58,7 @@ describe("context view", () => {
     const items = context.structure.sections[0]!.items;
     expect(items.find((item) => item.id === "dynamic")).not.toHaveProperty("value");
     expect(items.find((item) => item.id === "computed")).not.toHaveProperty("value");
+    expect(items.find((item) => item.id === "cycle-next-change")).toBeUndefined();
     expect(items.find((item) => item.id === "daily-reset")).toBeUndefined();
     expect(items.find((item) => item.id === "literal")).toHaveProperty("value", "fixed fact");
     expect(items.find((item) => item.id === "history")).toHaveProperty("value", "old event");
@@ -70,9 +72,14 @@ describe("context view", () => {
   it("keeps the daily reset timestamp in program state but out of AI-visible MVU", () => {
     const snapshot = createInitialStorySnapshot();
     const resetAt = snapshot.mvu.derived.statistics.nextDailyResetAt;
+    const cycleChangeAt = snapshot.mvu.derived.cycle.nextChangeAt;
     const context = buildMvuContextState(snapshot);
     expect(resetAt).toBeTruthy();
+    expect(cycleChangeAt).toBeTruthy();
+    expect(context.derived.cycle).not.toHaveProperty("nextChangeAt");
     expect(context.derived.statistics).not.toHaveProperty("nextDailyResetAt");
+    expect(context.platform).not.toHaveProperty("audiencePool");
+    expect(snapshot.mvu.derived.cycle.nextChangeAt).toBe(cycleChangeAt);
     expect(snapshot.mvu.derived.statistics.nextDailyResetAt).toBe(resetAt);
   });
 

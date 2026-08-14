@@ -177,6 +177,48 @@ describe("story engine", () => {
     expect(() => validateRuleConstraints(base, output, rule)).not.toThrow();
   });
 
+  it("enforces audience-pool reuse, newcomer limits, and threaded replies", () => {
+    const base = createInitialStorySnapshot();
+    const output = validOutput();
+    const postId = base.posts[0]!.id;
+    const template = structuredClone(base.comments[0]!);
+    const poolIds = base.mvu.platform.audiencePool.slice(0, 4).map((entry) => entry.accountId);
+    const newcomers = [
+      { id: "audience-new-a", displayName: "青柠", handle: "lime_0712" },
+      { id: "audience-new-b", displayName: "小岚", handle: "lan_331" }
+    ];
+    output.events.push(...newcomers.map((account) => ({
+      type: "account.upsert" as const,
+      account: { ...account, avatarSeed: account.handle, verified: false, bio: "", isPrivate: false }
+    })));
+    const authorIds = [...poolIds, ...newcomers.map((account) => account.id)];
+    output.events.push(...authorIds.map((authorId, index) => ({
+      type: "comment.upsert" as const,
+      comment: { ...structuredClone(template), id: `pool-comment-${index}`, postId, parentId: undefined, authorId }
+    })));
+    const rule = {
+      minProfileChanges: 0, minPanels: 1, maxPanels: 5,
+      maxNewCommentAccounts: 2, minAudiencePoolReuseRatio: 0.6,
+      commentThreadThreshold: 6, minThreadedReplyRatio: 0.25
+    };
+    expect(() => validateRuleConstraints(base, output, rule)).toThrow(/requires at least 2\/6 replies/);
+
+    const comments = output.events.filter((event) => event.type === "comment.upsert");
+    comments[4]!.comment.parentId = comments[0]!.comment.id;
+    comments[5]!.comment.parentId = comments[1]!.comment.id;
+    expect(() => validateRuleConstraints(base, output, rule)).not.toThrow();
+
+    output.events.unshift({
+      type: "account.upsert",
+      account: { id: "audience-new-c", displayName: "一禾", handle: "yihe_913", avatarSeed: "yihe_913", verified: false, bio: "", isPrivate: false }
+    });
+    output.events.push({
+      type: "comment.upsert",
+      comment: { ...structuredClone(template), id: "pool-comment-6", postId, parentId: comments[0]!.comment.id, authorId: "audience-new-c" }
+    });
+    expect(() => validateRuleConstraints(base, output, rule)).toThrow(/at most 2 new accounts|reuse at least/);
+  });
+
   it("allows a post created earlier in the turn to become the pinned post", () => {
     const base = createInitialStorySnapshot();
     const output = validOutput();
@@ -209,6 +251,14 @@ describe("story engine", () => {
     expect(() => validateRuleConstraints(base, output, {
       minProfileChanges: 0, minPanels: 1, maxPanels: 5, enforceFixedAccounts: true
     })).toThrow(/locked account|fixed account/);
+  });
+
+  it("keeps existing audience-pool account profiles immutable", () => {
+    const base = createInitialStorySnapshot();
+    const account = base.accounts.find((candidate) => candidate.id === base.mvu.platform.audiencePool[0]!.accountId)!;
+    const output = validOutput();
+    output.events.unshift({ type: "account.upsert", account: { ...structuredClone(account), displayName: "临时功能名" } });
+    expect(() => applyAiOutput(base, output)).toThrow(/Existing audience account cannot be overwritten/);
   });
 
   it("enforces valid render targets and strict reveal order", () => {

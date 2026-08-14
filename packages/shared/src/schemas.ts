@@ -30,6 +30,13 @@ export const AccountSchema = z.object({
   relationshipLabel: z.string().max(120).optional()
 }).strict();
 
+export const AudiencePoolEntrySchema = z.object({
+  accountId: id,
+  joinedAt: storyTime,
+  lastActiveAt: storyTime.optional(),
+  personaNote: z.string().max(500).optional()
+}).strict();
+
 export const MetricsSchema = z.object({
   replies: z.number().int().nonnegative().default(0),
   reposts: z.number().int().nonnegative().default(0),
@@ -335,6 +342,7 @@ function migrateLegacyMvu(value: unknown) {
   platform.appliedImpactIds ??= [];
   platform.impactLedger ??= [];
   platform.fanGoals ??= [];
+  platform.audiencePool ??= [];
   const derived: Record<string, unknown> = isRecord(value.derived) ? { ...value.derived } : {
     cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: story },
     statistics: { todayCount: 0, totalCount: 0, totalVolumeMl: 0, nextDailyResetAt: story }
@@ -378,6 +386,7 @@ export const MvuStateSchema = z.preprocess(migrateLegacyMvu, z.object({
     appliedImpactIds: z.array(id).max(20_000),
     impactLedger: z.array(PlatformImpactLedgerEntrySchema).max(20_000),
     fanGoals: z.array(FanGoalSchema).max(100),
+    audiencePool: z.array(AudiencePoolEntrySchema).max(50),
     flags: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({})
   }).strict(),
   extensions: z.record(z.string(), z.unknown()).default({}),
@@ -719,6 +728,7 @@ export const HomepageDraftSchema = z.object({
 }).strict();
 
 export type Account = z.infer<typeof AccountSchema>;
+export type AudiencePoolEntry = z.infer<typeof AudiencePoolEntrySchema>;
 export type Metrics = z.infer<typeof MetricsSchema>;
 export type TextMedia = z.infer<typeof TextMediaSchema>;
 export type Poll = z.infer<typeof PollSchema>;

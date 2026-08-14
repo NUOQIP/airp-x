@@ -5,6 +5,7 @@ import { branches, localActions, promptBlocks, roleCards, rulePresets, turnCandi
 import { getPromptPresetState, getRuntimeSettings } from "./config-service.js";
 import { stringifyContextValue } from "./context-sanitizer.js";
 import { buildAiRulePrompt, parseRuleConfig } from "./rule-config.js";
+import { buildAudienceRosterContext, DEFAULT_AUDIENCE_ROSTER_SIZE } from "./audience-pool.js";
 import { buildWorldbookScanText, selectWorldbookBudget, worldbookScopeEnabled } from "./context-policy.js";
 import { buildMvuContextState, buildProfileContextState, buildRecentPlatformContext, buildRecentPlatformScanText, hiddenDirectorInstruction, visibleTurnText } from "./context-view.js";
 
@@ -76,6 +77,14 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const promptPresetState = await getPromptPresetState(prompts);
   const activePromptPreset = promptPresetState.presets.find((preset) => preset.id === promptPresetState.activePresetId) ?? promptPresetState.presets[0]!;
   const parsedRule = parseRuleConfig(rule.rawText);
+  const commentConstraints = parsedRule?.hard_constraints.comments ?? {
+    audience_pool_size: 20,
+    roster_sample_size: DEFAULT_AUDIENCE_ROSTER_SIZE,
+    max_new_accounts_per_turn: 2,
+    pool_reuse_min_ratio: 0.6,
+    thread_required_at_comment_count: 6,
+    threaded_reply_min_ratio: 0.25
+  };
   const recentTurns = recentTurnRows.filter((turn) => turn.status === "complete");
   const failedTurns = recentTurnRows.filter((turn) => turn.status === "failed");
   const failedTurnIds = new Set(failedTurns.map((turn) => turn.id));
@@ -121,6 +130,23 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
   const contextMvu = buildMvuContextState(snapshot);
   if (markerEnabled("mvu_state")) mandatory.push({ label: "MVU 状态", message: { role: "system", content: `# 当前 MVU 状态\n${stringifyContextValue(contextMvu)}` } });
   if (markerEnabled("profile_state")) mandatory.push({ label: "主页状态与权限注册表", message: { role: "system", content: `# 当前主页结构、唯一数据源与权限注册表\n${stringifyContextValue(buildProfileContextState(snapshot))}` } });
+  const audienceRoster = buildAudienceRosterContext(snapshot, currentTurnId ?? `${branchId}:${snapshot.mvu.revision}`, commentConstraints.roster_sample_size);
+  mandatory.push({
+    label: "本轮评论账号池候选",
+    message: {
+      role: "system",
+      content: `# 本轮随机评论账号池候选（程序约束）\n${stringifyContextValue({
+        ...audienceRoster,
+        constraints: {
+          mostOrdinaryCommentsMustReusePool: true,
+          maxNewAccountsThisTurn: commentConstraints.max_new_accounts_per_turn,
+          minimumPoolReuseRatio: commentConstraints.pool_reuse_min_ratio,
+          threadRequiredAtCommentCount: commentConstraints.thread_required_at_comment_count,
+          minimumThreadedReplyRatio: commentConstraints.threaded_reply_min_ratio
+        }
+      })}\n优先从 candidates 选择作者并继承档案与 recentVoice；池内账号直接在 comment.authorId 中引用，不要再次 account.upsert。身份类型是全池性格基调，不是本轮清单；新账号资料不得直接命名其剧情功能。`
+    }
+  });
   if (pendingActionRows.length > 0) {
     const latestByTarget = new Map<string, unknown>();
     for (const action of pendingActionRows) {
@@ -302,6 +328,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
     const currentInputIndex = stackMessages.indexOf(currentInput);
     stackMessages.splice(currentInputIndex < 0 ? stackMessages.length : currentInputIndex, 0, pendingActionMessage);
   }
+  const audienceRosterMessage = byLabel("本轮评论账号池候选");
+  if (audienceRosterMessage) {
+    const currentInputIndex = stackMessages.indexOf(currentInput);
+    stackMessages.splice(currentInputIndex < 0 ? stackMessages.length : currentInputIndex, 0, audienceRosterMessage);
+  }
   const directorMessage = byLabel("Master 隐藏导演指令");
   if (directorMessage) {
     const currentInputIndex = stackMessages.indexOf(currentInput);
@@ -329,6 +360,11 @@ export async function assembleContext(branchId: string, input: PlayerTurnInput, 
       minPanels: parsedRule?.hard_constraints.render_plan.min_panels ?? rule.minPanels,
       maxPanels: parsedRule?.hard_constraints.render_plan.max_panels ?? rule.maxPanels,
       representativeComments: parsedRule?.hard_constraints.posts.representative_comments ?? rule.representativeComments,
+      audiencePoolSize: commentConstraints.audience_pool_size,
+      maxNewCommentAccounts: commentConstraints.max_new_accounts_per_turn,
+      minAudiencePoolReuseRatio: commentConstraints.pool_reuse_min_ratio,
+      commentThreadThreshold: commentConstraints.thread_required_at_comment_count,
+      minThreadedReplyRatio: commentConstraints.threaded_reply_min_ratio,
       requireProfilePanel: false,
       requireStrictRevealOrder: parsedRule?.hard_constraints.render_plan.require_strict_reveal_order ?? true,
       requireValidPanelTargets: parsedRule?.hard_constraints.render_plan.require_valid_targets ?? true,

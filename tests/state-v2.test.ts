@@ -82,6 +82,7 @@ describe("homepage state v2", () => {
     const live = migrated.profile.sections.find((section) => section.id === "live-status")!;
     expect(live.items.find((item) => item.id === "current-status")?.source.path).toBe("heroine.status");
     expect(live.items.find((item) => item.id === "cycle-phase")).toMatchObject({ permission: "computed", source: { path: "cycle.phase" } });
+    expect(live.items.some((item) => item.id === "cycle-next-change" || item.source.path === "cycle.nextChangeAt")).toBe(false);
     const statistics = migrated.profile.sections.find((section) => section.id === "breeding-records")!;
     expect(statistics.items.some((item) => item.id === "daily-reset" || item.source.path === "statistics.nextDailyResetAt")).toBe(false);
   });

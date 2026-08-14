@@ -1,6 +1,6 @@
 import type { AppSnapshot, ProfileSection } from "@airp/shared";
 import { Activity, CalendarClock, Gauge, MapPin, Radio, Sparkles, TrendingUp } from "lucide-react";
-import { compactNumber, storyDate } from "../lib/format";
+import { compactNumber } from "../lib/format";
 import { HistoryControls } from "./HistoryControls";
 
 type RailMode = "full" | "trends";
@@ -35,15 +35,13 @@ function liveItems(snapshot: AppSnapshot) {
   const phaseLabels: Record<string, string> = { menstruation: "经期", follicular: "卵泡期", ovulation: "排卵期", luteal: "黄体期", suspected: "疑似妊娠", pregnant: "妊娠中" };
   const phase = display(cycle?.phase);
   const cycleDay = display(cycle?.cycleDay);
-  const nextChangeAt = display(cycle?.nextChangeAt);
   const values = [
     { label: "当前状态", value: display(heroine.status) || sectionItem(legacy, [/状态/, /实况/]), icon: Radio },
     { label: "当前活动", value: display(heroine.activity) || sectionItem(legacy, [/活动/, /行为/]), icon: Activity },
     { label: "当前穿搭", value: display(heroine.outfit) || sectionItem(legacy, [/穿搭/, /服装/]), icon: Sparkles },
     { label: "当前心情", value: display(heroine.mood) || sectionItem(legacy, [/心情/, /情绪/]), icon: Activity },
     { label: "当前位置", value: display(heroine.location) || snapshot.profile.location, icon: MapPin },
-    { label: "当前周期", value: phase ? `${phaseLabels[phase] ?? phase}${cycleDay ? ` · 第 ${cycleDay} 天` : ""}` : sectionItem(legacy, [/排卵/, /周期/]) || legacyCycle?.value.trim() || "", icon: CalendarClock },
-    { label: "下次变化", value: nextChangeAt ? storyDate(nextChangeAt) : "", icon: CalendarClock }
+    { label: "当前周期", value: phase ? `${phaseLabels[phase] ?? phase}${cycleDay ? ` · 第 ${cycleDay} 天` : ""}` : sectionItem(legacy, [/排卵/, /周期/]) || legacyCycle?.value.trim() || "", icon: CalendarClock }
   ];
   const pregnancy = record(cycle?.pregnancy);
   if (pregnancy) {

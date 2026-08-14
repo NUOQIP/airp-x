@@ -110,6 +110,14 @@ const RuleYamlSchema = z.object({
       ai_temporary_content_removable_by_ai: z.literal(true)
     }).strict(),
     render_plan: z.object({ min_panels: z.number().int().min(0).max(8), max_panels: z.number().int().min(1).max(8), require_strict_reveal_order: z.boolean(), require_valid_targets: z.boolean(), only_changed_components: z.literal(true) }).strict(),
+    comments: z.object({
+      audience_pool_size: z.number().int().min(5).max(50),
+      roster_sample_size: z.number().int().min(3).max(30),
+      max_new_accounts_per_turn: z.number().int().min(0).max(10),
+      pool_reuse_min_ratio: z.number().min(0.5).max(1),
+      thread_required_at_comment_count: z.number().int().min(2).max(50),
+      threaded_reply_min_ratio: z.number().min(0.1).max(1)
+    }).strict(),
     posts: z.object({ representative_comments: z.number().int().min(0).max(100) }).strict(),
     live: z.object({ min_queue_items: z.number().int().min(0).max(500), max_queue_items: z.number().int().min(0).max(500), require_barrage: z.boolean() }).strict(),
     identity: z.object({ enforce_fixed_accounts: z.boolean() }).strict()
@@ -122,6 +130,16 @@ export type ParsedRuleConfig = z.infer<typeof RuleYamlSchema>;
 const V2_MARKER = "【主页权限与唯一数据源 v2】";
 const V2_EXTENSION_MARKER = "【主页扩展事件补充 v2.1】";
 const V2_PREGNANCY_MARKER = "【妊娠状态确认链 v2.2】";
+const V2_COMMENT_POOL_MARKER = "【评论账号池与真实感补充 v2.3】";
+
+const defaultCommentConstraints = {
+  audience_pool_size: 20,
+  roster_sample_size: 12,
+  max_new_accounts_per_turn: 2,
+  pool_reuse_min_ratio: 0.6,
+  thread_required_at_comment_count: 6,
+  threaded_reply_min_ratio: 0.25
+} as const;
 
 function appendWithoutChangingPrefix(source: string, addition: string) {
   const separator = source.endsWith("\n\n") ? "" : source.endsWith("\n") ? "\n" : "\n\n";
@@ -160,6 +178,16 @@ export function upgradeOriginalRule(originalRule: string) {
       "  - 仅按 confirmed → ended 结束妊娠；进入 ended 的同一轮必须给出新的 cycle.anchorDate，之后才可按 ended → none 回到普通周期。"
     ].join("\n")}\n`);
   }
+  if (!result.includes(V2_COMMENT_POOL_MARKER)) {
+    result = appendWithoutChangingPrefix(result, `  ${V2_COMMENT_POOL_MARKER}\n${[
+      "  - 上文“多样性要求”中的全部身份、行为、争吵、噪音及命名介绍保持原文、完整有效，作为整个基础账号池长期可用的性格与行为基调；本段不删除、不改写其中任何介绍，尤其不弱化“会出现雌竞——女性围绕雄性资源互相比较/贬低/踩踏”。",
+      "  - 上述类型是整个账号池的长期可能性，不是单轮待凑齐的角色清单。每轮只选择符合当前传播范围、既往关系和偶然性的少数账号，不要求覆盖所有身份或观点。",
+      "  - 程序会提供本轮账号池候选。评论作者大部分复用池内账号并继承其 id、displayName、handle、bio、personaNote 与 recentVoice；池内账号直接用于 comment.authorId，不得再次 account.upsert，也不要为了表达一个立场就临时创造功能型昵称或简介。",
+      "  - 昵称、handle、bio 与本轮评论功能解耦。账号可以质疑、雌竞、拱火、认人或跑题，但资料不应直接写成“理性观众”“本地目击者”“专拆剧本”等剧情职位；bio 通常为空或是与本轮无关的生活资料。",
+      "  - 每轮普通新评论账号最多约 2 个；新账号成功参与评论后由程序加入账号池。其余未展示的互动由平台指标表达，不靠批量创建一次性账号凑热度。",
+      "  - 同一评论区达到 6 条评论时，至少四分之一应使用 parentId 回复已有评论，形成互相回复、吵偏、接梗或熟人互动；不要让每条评论都彼此独立地只对博主发言。"
+    ].join("\n")}\n`);
+  }
   return result;
 }
 
@@ -194,6 +222,7 @@ function createV2Object(ruleName: string, originalRule: string, legacy?: z.infer
       messages: { speech_segments_are_character_visible: true, director_instruction_is_hidden: true, allow_director_only_turn: true, director_instruction_excluded_from_history_scan_and_snapshot: true },
       homepage: { tabs: ["posts", "records"], sidebar_home: ["live_status", "fan_plan", "trends"], sidebar_messages: ["live_status", "fan_plan", "trends"], remove_live_tab: true, remove_about_tab: true, remove_following_count: true, remove_local_narrative_homepage_label: true, usage_notice_in_bio: true, usage_notice_separate_from_main_bio: true, registry_in_records: true, ai_extension_placement: "records", ai_extension_initial_permissions: ["temporary"], ai_extension_history_permission: "append_only", ai_timeline_requires_empty_section_then_append: true, max_ai_extension_sections: 8, max_items_per_ai_extension: 12, fixed_live_status_allows_ai_temporary_items: true, temporary_item_add_event: "profile.item.add", temporary_item_remove_event: "profile.item.remove", initial_content_removable_by_ai: false, ai_temporary_content_removable_by_ai: true },
       render_plan: { min_panels: minPanels, max_panels: maxPanels, require_strict_reveal_order: legacy?.hard_constraints.render_plan.require_strict_reveal_order ?? true, require_valid_targets: legacy?.hard_constraints.render_plan.require_valid_targets ?? true, only_changed_components: true },
+      comments: { ...defaultCommentConstraints },
       posts: { representative_comments: representativeComments },
       live: legacy?.hard_constraints.live ?? { min_queue_items: 10, max_queue_items: 25, require_barrage: true },
       identity: legacy?.hard_constraints.identity ?? { enforce_fixed_accounts: true }
@@ -233,6 +262,7 @@ export function normalizeRuleConfig(rawText: string) {
     const hardConstraints = migratedValue.hard_constraints as Record<string, unknown> | undefined;
     const cycle = hardConstraints?.cycle as Record<string, unknown> | undefined;
     const homepage = hardConstraints?.homepage as Record<string, unknown> | undefined;
+    if (hardConstraints) hardConstraints.comments ??= { ...defaultCommentConstraints };
     if (cycle) {
       cycle.pregnancy_state_transition_chain ??= ["none", "suspected", "confirmed", "ended", "none"];
       cycle.pregnancy_same_state_hold_allowed ??= true;
@@ -308,6 +338,7 @@ export function buildAiRulePrompt(rawText: string) {
         output_story_time_is_extended_when_needed: true
       },
       cycle: hard.cycle,
+      comment_ecology: hard.comments,
       limits: {
         ai_extension_sections: hard.homepage.max_ai_extension_sections,
         items_per_ai_extension: hard.homepage.max_items_per_ai_extension,

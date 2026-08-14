@@ -1,5 +1,6 @@
 import type { AiTurnOutput, DomainEvent, Metrics, StorySnapshot } from "@airp/shared";
 import { MvuStateSchema } from "@airp/shared";
+import { ensureAudiencePool, touchAudiencePool } from "./audience-pool.js";
 import { synchronizeDerivedProfileStats } from "./snapshot-normalizer.js";
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -198,6 +199,9 @@ function applyEvent(snapshot: StorySnapshot, event: DomainEvent, eventTime = sna
         && snapshot.accounts.some((account) => account.id === event.account.id)) {
         throw new Error(`AI cannot modify locked account ${event.account.id}`);
       }
+      if (snapshot.accounts.some((account) => account.id === event.account.id)) {
+        throw new Error(`Existing audience account cannot be overwritten: ${event.account.id}`);
+      }
       upsert(snapshot.accounts, event.account.id === privateHeroineAccountId
         ? { ...event.account, isPrivate: true, relationshipLabel: "女主的私密账号" }
         : event.account.id === coverHeroineAccountId
@@ -243,6 +247,7 @@ function applyEvent(snapshot: StorySnapshot, event: DomainEvent, eventTime = sna
       snapshot.comments.push({ ...event.comment, createdAt: eventTime, metrics: zeroMetrics() });
       snapshot.posts.find((post) => post.id === event.comment.postId)!.metrics.replies += 1;
       if (event.comment.parentId) snapshot.comments.find((comment) => comment.id === event.comment.parentId)!.metrics.replies += 1;
+      touchAudiencePool(snapshot, event.comment.authorId, eventTime);
       return;
     case "comment.moderate": {
       const comment = snapshot.comments.find((item) => item.id === event.commentId);
@@ -458,7 +463,7 @@ export function applyAiOutput(base: StorySnapshot, output: AiTurnOutput): StoryS
   const newTime = Date.parse(output.storyTime);
   if (!Number.isFinite(newTime)) throw new Error(`Invalid story time: ${output.storyTime}`);
   if (Number.isFinite(oldTime) && newTime < oldTime) throw new Error("Story time cannot move backwards");
-  const next = clone(base);
+  const next = ensureAudiencePool(clone(base));
   const previousPregnancy = clone(base.mvu.heroine.cycle.pregnancy);
   const previousAnchorDate = base.mvu.heroine.cycle.anchorDate;
   const { eventTimes } = buildEventTimeline(base, output);
@@ -517,6 +522,11 @@ export interface RuntimeRuleConstraints {
   minPanels: number;
   maxPanels: number;
   representativeComments?: number;
+  audiencePoolSize?: number;
+  maxNewCommentAccounts?: number;
+  minAudiencePoolReuseRatio?: number;
+  commentThreadThreshold?: number;
+  minThreadedReplyRatio?: number;
   requireProfilePanel?: boolean;
   requireStrictRevealOrder?: boolean;
   requireValidPanelTargets?: boolean;
@@ -645,6 +655,37 @@ export function validateRuleConstraints(base: StorySnapshot, output: AiTurnOutpu
     const comments = output.events.filter((event) => event.type === "comment.upsert" && event.comment.postId === postId).length;
     const target = rule.representativeComments ?? 1;
     if (target > 0 && comments === 0) issues.push(`post ${postId} requires at least 1 accompanying comment when representative comments are enabled`);
+  }
+  const fixedCommentAuthors = new Set([privateHeroineAccountId, coverHeroineAccountId, playerAccountId]);
+  const ordinaryCommentEvents = output.events.filter((event): event is Extract<DomainEvent, { type: "comment.upsert" }> =>
+    event.type === "comment.upsert" && !fixedCommentAuthors.has(event.comment.authorId));
+  const existingAccountIds = new Set(base.accounts.map((account) => account.id));
+  const newCommentAccountIds = new Set(ordinaryCommentEvents.filter((event) => !existingAccountIds.has(event.comment.authorId)).map((event) => event.comment.authorId));
+  const maxNewCommentAccounts = rule.maxNewCommentAccounts ?? 2;
+  if (newCommentAccountIds.size > maxNewCommentAccounts) {
+    issues.push(`ordinary comments may introduce at most ${maxNewCommentAccounts} new accounts per turn; received ${newCommentAccountIds.size}`);
+  }
+  if (ordinaryCommentEvents.length >= 3) {
+    const poolIds = new Set(base.mvu.platform.audiencePool.map((entry) => entry.accountId));
+    const reusedFromPool = ordinaryCommentEvents.filter((event) => poolIds.has(event.comment.authorId)).length;
+    const minimumRatio = rule.minAudiencePoolReuseRatio ?? 0.6;
+    const minimumReuse = Math.ceil(ordinaryCommentEvents.length * minimumRatio);
+    if (reusedFromPool < minimumReuse) issues.push(`ordinary comments must reuse at least ${minimumReuse}/${ordinaryCommentEvents.length} active audience-pool authors; received ${reusedFromPool}`);
+  }
+  const commentsByPost = new Map<string, Array<Extract<DomainEvent, { type: "comment.upsert" }>>>();
+  for (const event of output.events) {
+    if (event.type !== "comment.upsert") continue;
+    const list = commentsByPost.get(event.comment.postId) ?? [];
+    list.push(event);
+    commentsByPost.set(event.comment.postId, list);
+  }
+  const threadThreshold = rule.commentThreadThreshold ?? 6;
+  const minimumThreadRatio = rule.minThreadedReplyRatio ?? 0.25;
+  for (const [postId, comments] of commentsByPost) {
+    if (comments.length < threadThreshold) continue;
+    const threaded = comments.filter((event) => Boolean(event.comment.parentId)).length;
+    const required = Math.ceil(comments.length * minimumThreadRatio);
+    if (threaded < required) issues.push(`comment thread ${postId} requires at least ${required}/${comments.length} replies with parentId; received ${threaded}`);
   }
   for (const event of output.events) {
     if (event.type !== "live.upsert") continue;

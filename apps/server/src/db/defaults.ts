@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { StorySnapshot } from "@airp/shared";
+import { createDefaultAudienceAccounts, createDefaultAudiencePool } from "../services/audience-pool.js";
 import { synchronizeDerivedProfileStats } from "../services/snapshot-normalizer.js";
 
 export const PLAYER_ID = "account-player";
@@ -91,7 +92,8 @@ export function createBlankStorySnapshot(): StorySnapshot {
         bio: "",
         isPrivate: true,
         relationshipLabel: "玩家"
-      }
+      },
+      ...createDefaultAudienceAccounts()
     ],
     profile: {
       accountId: HEROINE_ID,
@@ -126,7 +128,7 @@ export function createBlankStorySnapshot(): StorySnapshot {
         relationship: {}
       },
       player: { relationship: {} },
-      platform: { activeTrends: [], appliedImpactIds: [], impactLedger: [], fanGoals: [], flags: {} },
+      platform: { activeTrends: [], appliedImpactIds: [], impactLedger: [], fanGoals: [], audiencePool: createDefaultAudiencePool(blankTime), flags: {} },
       extensions: { homepageConfigured: false, homepageSource: "", identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } },
       derived: {
         cycle: { phase: "menstruation", cycleDay: 1, nextChangeAt: blankTime },
@@ -180,7 +182,8 @@ export function createInitialStorySnapshot(): StorySnapshot {
         verified: false,
         bio: "街拍与现场记录",
         isPrivate: false
-      }
+      },
+      ...createDefaultAudienceAccounts()
     ],
     profile: {
       accountId: HEROINE_ID,
@@ -360,6 +363,7 @@ export function createInitialStorySnapshot(): StorySnapshot {
       platform: {
         activeTrends: ["#城市现场", "#实时直播"], appliedImpactIds: [], impactLedger: [],
         fanGoals: [{ id: "fan-goal-150k", targetFollowers: 150_000, reward: "", createdAt: seedTime }],
+        audiencePool: createDefaultAudiencePool(seedTime),
         flags: { liveInProgress: true }
       },
       extensions: { identityLinks: { heroine: { privateAccountId: HEROINE_ID, coverAccountId: HEROINE_COVER_ID } } },

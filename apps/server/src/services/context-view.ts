@@ -12,6 +12,8 @@ export function buildMvuContextState(snapshot: StorySnapshot) {
   const contextMvu = structuredClone(snapshot.mvu);
   delete contextMvu.extensions.homepageSource;
   delete (contextMvu.platform as Partial<typeof contextMvu.platform>).activeTrends;
+  delete (contextMvu.platform as Partial<typeof contextMvu.platform>).audiencePool;
+  delete (contextMvu.derived.cycle as Partial<typeof contextMvu.derived.cycle>).nextChangeAt;
   delete (contextMvu.derived.statistics as Partial<typeof contextMvu.derived.statistics>).nextDailyResetAt;
   return contextMvu;
 }
@@ -81,7 +83,8 @@ export function buildProfileContextState(snapshot: StorySnapshot) {
     page: section.page,
     order: section.order,
     origin: section.origin,
-    items: section.items.filter((item) => item.id !== "daily-reset" && item.source.path !== "statistics.nextDailyResetAt").map((item) => ({
+    items: section.items.filter((item) => item.id !== "daily-reset" && item.id !== "cycle-next-change"
+      && item.source.path !== "statistics.nextDailyResetAt" && item.source.path !== "cycle.nextChangeAt").map((item) => ({
       id: item.id,
       label: item.label,
       emphasis: item.emphasis,

@@ -24,6 +24,7 @@ import { createBlankStorySnapshot, PLAYER_ID, SESSION_ID } from "../db/defaults.
 import { generateAiTurn } from "./ai-client.js";
 import { assembleContext } from "./context-service.js";
 import { applyAiOutput, normalizeAiTimeline, validateRuleConstraints } from "./story-engine.js";
+import { ensureAudiencePool } from "./audience-pool.js";
 import { applyOutputRegex } from "./regex-service.js";
 import { synchronizeDerivedProfileStats } from "./snapshot-normalizer.js";
 import { withBranchLock } from "./branch-lock.js";
@@ -321,7 +322,7 @@ async function generateForTurn(turnId: string, regeneration: boolean): Promise<T
       input.kind === "comment" ? 0 : input.speechSegments.length
     ));
     validateRuleConstraints(inputStory, output, context.rule);
-    const nextStory = applyAiOutput(inputStory, output);
+    const nextStory = ensureAudiencePool(applyAiOutput(inputStory, output), context.rule.audiencePoolSize);
     const candidateId = nanoid();
     const now = stamp();
     const summary = trimRollingSummary(output.memoryNote

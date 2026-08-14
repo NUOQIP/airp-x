@@ -32,6 +32,7 @@ describe("rule config v2", () => {
     expect(normalized.config.hard_constraints.render_plan.min_panels).toBe(0);
     expect(normalized.config.hard_constraints.cycle.pregnancy_state_transition_chain).toEqual(["none", "suspected", "confirmed", "ended", "none"]);
     expect(normalized.config.hard_constraints.cycle.pregnancy_transition_skips_allowed).toBe(false);
+    expect(normalized.config.hard_constraints.comments).toMatchObject({ audience_pool_size: 20, max_new_accounts_per_turn: 2, pool_reuse_min_ratio: 0.6 });
   });
 
   it("keeps the v2 append idempotent", () => {
@@ -40,7 +41,9 @@ describe("rule config v2", () => {
     expect(once.match(/【主页权限与唯一数据源 v2】/g)).toHaveLength(1);
     expect(once.match(/【主页扩展事件补充 v2\.1】/g)).toHaveLength(1);
     expect(once.match(/【妊娠状态确认链 v2\.2】/g)).toHaveLength(1);
+    expect(once.match(/【评论账号池与真实感补充 v2\.3】/g)).toHaveLength(1);
     expect(once).toContain("none → suspected → confirmed → ended → none");
+    expect(once).toContain("会出现雌竞——女性围绕雄性资源互相比较/贬低/踩踏");
   });
 
   it("preserves the exact original bytes as a prefix, including trailing whitespace", () => {
